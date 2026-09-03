@@ -2,7 +2,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.config import HOST, PORT, DEBUG, UPLOAD_DIR, OUTPUT_DIR, ALLOWED_ORIGINS, IS_PRODUCTION
+from app.config import HOST, PORT, DEBUG, UPLOAD_DIR, OUTPUT_DIR, ALLOWED_ORIGINS, IS_PRODUCTION, USE_R2
 from app.api.endpoints import router as api_router
 
 app = FastAPI(
@@ -22,8 +22,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Static mounts (local dev only — in production files are on R2) ──────────
-if not IS_PRODUCTION:
+# ─── Static mounts (mount if not using Cloudflare R2) ──────────
+if not USE_R2:
     app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
     app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 
