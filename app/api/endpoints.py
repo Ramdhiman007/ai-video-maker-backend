@@ -460,3 +460,24 @@ async def delete_video(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found.")
     save_task_progress(task_id, {})
     return {"message": f"Task {task_id} deleted."}
+
+
+# ─── Debug Tasks ─────────────────────────────────────────────────────────────
+
+@router.get("/debug-tasks")
+def debug_tasks():
+    from app.utils.redis_store import _DB_PATH
+    import sqlite3
+    rows = []
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5.0) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, val FROM store WHERE key LIKE 'task:%' ORDER BY rowid DESC LIMIT 10")
+            for k, v in cur.fetchall():
+                try:
+                    rows.append({"key": k, "val": json.loads(v)})
+                except Exception:
+                    rows.append({"key": k, "val": v})
+    except Exception as e:
+        return {"error": str(e)}
+    return {"tasks": rows}
