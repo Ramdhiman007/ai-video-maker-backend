@@ -323,48 +323,78 @@ def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, dur
     prep_img_path = out_clip_path.parent / f"prep_{out_clip_path.stem}.png"
     _prepare_subtitled_image(img_path, prep_img_path, subtitle_text, target_width, target_height)
 
-    zoom_expr = "min(zoom+0.0012,1.20)"
-    x_expr = "iw/2-(iw/zoom/2)"
-    y_expr = "ih/2-(ih/zoom/2)"
+    # Full-Motion Animation: Organic 3D camera drift & breathing
+    zoom_expr = "1.06+0.03*sin(2*PI*it/4.0)"
+    x_expr = "iw/2-(iw/zoom/2)+12*sin(2*PI*it/3.0)"
+    y_expr = "ih/2-(ih/zoom/2)+8*cos(2*PI*it/3.0)"
 
     if camera_motion == "zoom_out":
-        zoom_expr = "max(1.20-0.0012*on,1.0)"
+        zoom_expr = "1.14-0.03*sin(2*PI*it/4.0)"
+        x_expr = "iw/2-(iw/zoom/2)-12*sin(2*PI*it/3.0)"
+        y_expr = "ih/2-(ih/zoom/2)-8*cos(2*PI*it/3.0)"
     elif camera_motion == "pan_left":
-        zoom_expr = "1.12"
-        x_expr = f"(1-on/{frames})*(iw-iw/zoom)"
+        zoom_expr = "1.10"
+        x_expr = f"(1-on/{frames})*(iw-iw/zoom)+8*sin(2*PI*it/2.5)"
+        y_expr = "ih/2-(ih/zoom/2)+6*cos(2*PI*it/2.5)"
     elif camera_motion == "pan_right":
-        zoom_expr = "1.12"
-        x_expr = f"(on/{frames})*(iw-iw/zoom)"
-    elif camera_motion == "pan_up":
-        zoom_expr = "1.12"
-        y_expr = f"(1-on/{frames})*(ih-ih/zoom)"
-    elif camera_motion == "pan_down":
-        zoom_expr = "1.12"
-        y_expr = f"(on/{frames})*(ih-ih/zoom)"
+        zoom_expr = "1.10"
+        x_expr = f"(on/{frames})*(iw-iw/zoom)+8*sin(2*PI*it/2.5)"
+        y_expr = "ih/2-(ih/zoom/2)+6*cos(2*PI*it/2.5)"
 
-    filter_chain = f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={target_width}x{target_height}:fps={fps},format=yuv420p"
-
-    cmd = [
-        FFMPEG_PATH, "-y",
-        "-loop", "1",
-        "-framerate", str(fps),
-        "-t", str(duration),
-        "-i", str(prep_img_path),
-        "-i", str(audio_path),
-        "-vf", filter_chain,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "22",
-        "-threads", "1",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-ar", "44100",
-        "-ac", "2",
-        "-frames:v", str(frames),
-        "-shortest",
-        "-pix_fmt", "yuv420p",
-        str(out_clip_path)
-    ]
+    particle_path = STORY_ASSETS_DIR.parent / "starlight_particles.mp4"
+    if particle_path.exists():
+        filter_complex = (
+            f"[0:v]scale={int(target_width*1.1)}x{int(target_height*1.1)},zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={target_width}x{target_height}:fps={fps}[bg];"
+            f"[1:v]colorkey=black:0.15:0.2[pt];"
+            f"[bg][pt]overlay=0:0:shortest=1,format=yuv420p[v]"
+        )
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-loop", "1",
+            "-t", str(duration),
+            "-i", str(prep_img_path),
+            "-stream_loop", "-1",
+            "-i", str(particle_path),
+            "-i", str(audio_path),
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", "2:a",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-threads", "1",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-frames:v", str(frames),
+            "-shortest",
+            "-pix_fmt", "yuv420p",
+            str(out_clip_path)
+        ]
+    else:
+        filter_chain = f"scale={int(target_width*1.1)}x{int(target_height*1.1)},zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={target_width}x{target_height}:fps={fps},format=yuv420p"
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-loop", "1",
+            "-framerate", str(fps),
+            "-t", str(duration),
+            "-i", str(prep_img_path),
+            "-i", str(audio_path),
+            "-vf", filter_chain,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-threads", "1",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-frames:v", str(frames),
+            "-shortest",
+            "-pix_fmt", "yuv420p",
+            str(out_clip_path)
+        ]
 
     try:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
