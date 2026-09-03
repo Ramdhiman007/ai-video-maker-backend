@@ -79,3 +79,15 @@ class TaskProgress(BaseModel):
     result_video_url: Optional[str] = None
     timeline: Optional[Timeline] = None
     error: Optional[str] = None
+
+class StoryVideoRequest(BaseModel):
+    story: str
+    title: Optional[str] = "AI Animated Story"
+    animation_style: str = "pixar"          # 'pixar', 'anime', 'watercolor', 'comic', 'fantasy', 'cyberpunk'
+    voice: str = "en-US-ChristopherNeural"  # edge-tts voice ID
+    aspect_ratio: str = "16:9"              # '16:9', '9:16', '1:1'
+    quality: str = "1080p"                  # '720p', '1080p', '4K'
+    enable_subtitles: bool = True
+    music_mood: str = "cinematic"           # 'cinematic', 'whimsical', 'adventure', 'emotional', 'none'
+    music_volume: float = 0.18
+

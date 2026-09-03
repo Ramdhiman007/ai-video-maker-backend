@@ -15,7 +15,7 @@ from app.config import (
 )
 from app.models.schemas import (
     MediaItem, UploadResponse, CreateVideoRequest,
-    VideoSettings, TaskProgress, Timeline
+    VideoSettings, TaskProgress, Timeline, StoryVideoRequest
 )
 from app.utils.redis_store import (
     save_media_metadata, get_media_metadata,
@@ -370,6 +370,64 @@ async def create_video(request: CreateVideoRequest, background_tasks: Background
     )
     save_task_progress(task_id, initial_task.model_dump())
     background_tasks.add_task(run_video_generation_task, task_id, request.media_ids, request.settings)
+    return initial_task
+
+
+def run_story_video_task(task_id: str, req: StoryVideoRequest):
+    """Background task to transform story text into an animated video."""
+    try:
+        from app.services.story_engine import render_story_to_animated_video
+        result_url = render_story_to_animated_video(task_id, req)
+
+        if is_r2_configured():
+            output_filename = f"story_{task_id}.mp4"
+            local_output = OUTPUT_DIR / output_filename
+            if local_output.exists():
+                try:
+                    r2_result_url = upload_output_video(local_output, task_id)
+                    task = get_task_progress(task_id) or {}
+                    task["result_video_url"] = r2_result_url
+                    save_task_progress(task_id, task)
+                    print(f"[story_task] Uploaded final video to R2: {r2_result_url}")
+                except Exception as e:
+                    print(f"[story_task] R2 video upload notice: {e}")
+
+    except Exception as e:
+        print(f"[story_task] Story task {task_id} failed: {e}")
+        save_task_progress(task_id, {
+            "task_id": task_id,
+            "status": "failed",
+            "progress": 0,
+            "current_step": "Failed",
+            "step_details": [],
+            "error": str(e),
+        })
+
+
+@router.post("/create-story-video", response_model=TaskProgress)
+async def create_story_video(request: StoryVideoRequest, background_tasks: BackgroundTasks):
+    """Converts a story of any length into an animated video with voiceover and artwork."""
+    if not request.story.strip():
+        raise HTTPException(status_code=400, detail="Story text cannot be empty.")
+
+    task_id = f"task_{uuid.uuid4().hex[:8]}"
+
+    initial_task = TaskProgress(
+        task_id=task_id,
+        status="processing",
+        progress=5,
+        current_step="Analyzing story",
+        step_details=[
+            {"name": "Analyzing story",       "status": "in_progress", "details": "Extracting narrative scenes"},
+            {"name": "Planning scenes",        "status": "pending",     "details": f"{request.animation_style.title()} animation style"},
+            {"name": "Generating animation",   "status": "pending",     "details": "Neural voiceover & AI artwork"},
+            {"name": "Assembling movie",       "status": "pending",     "details": "Camera motion & subtitles"},
+            {"name": "Mastering soundtrack",   "status": "pending",     "details": "Ambient background score"},
+            {"name": "Finalizing",             "status": "pending",     "details": "MP4 rendering"},
+        ],
+    )
+    save_task_progress(task_id, initial_task.model_dump())
+    background_tasks.add_task(run_story_video_task, task_id, request)
     return initial_task
 
 
