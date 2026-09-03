@@ -126,20 +126,22 @@ def create_photo_motion_clip(
     cmd = [
         FFMPEG_PATH, "-y",
         "-loop", "1",
+        "-framerate", str(fps),
+        "-t", str(duration),
         "-i", str(prep_img_path),
         "-vf", filter_chain,
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "22",
         "-threads", "0",
-        "-t", str(duration),
+        "-frames:v", str(frames),
         "-pix_fmt", "yuv420p",
         str(out_clip_path)
     ]
 
     try:
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=60)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, Exception) as e:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=15)
+    except Exception as e:
         fallback_chain = f"scale={target_width}:{target_height},fps={fps},format=yuv420p"
         if color_filter in COLOR_FILTER_FFMPEG and COLOR_FILTER_FFMPEG[color_filter]:
             fallback_chain += f",{COLOR_FILTER_FFMPEG[color_filter]}"
@@ -147,17 +149,19 @@ def create_photo_motion_clip(
         fallback_cmd = [
             FFMPEG_PATH, "-y",
             "-loop", "1",
+            "-framerate", str(fps),
+            "-t", str(duration),
             "-i", str(prep_img_path),
             "-vf", fallback_chain,
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", "22",
             "-threads", "0",
-            "-t", str(duration),
+            "-frames:v", str(frames),
             "-pix_fmt", "yuv420p",
             str(out_clip_path)
         ]
-        subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=45)
+        subprocess.run(fallback_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
 
     if prep_img_path.exists():
         try:
@@ -206,7 +210,7 @@ def normalize_video_clip(
     ]
 
     try:
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=60)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
     except Exception as e:
         print(f"Error normalizing video clip {video_path}: {e}")
         raise e
@@ -308,7 +312,7 @@ def concatenate_clips_with_transitions(
     ]
 
     try:
-        subprocess.run(cmd_copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30)
+        subprocess.run(cmd_copy, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=15)
     except Exception:
         # Fallback: re-encode with veryfast preset
         cmd_fallback = [
@@ -323,7 +327,7 @@ def concatenate_clips_with_transitions(
             "-pix_fmt", "yuv420p",
             str(out_video_path)
         ]
-        subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=60)
+        subprocess.run(cmd_fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
     finally:
         if concat_list_file.exists():
             try:
@@ -362,7 +366,7 @@ def mix_audio_track(
     ]
 
     try:
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=60)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
     except Exception as e:
         print(f"Audio mix error, copying video as fallback: {e}")
         shutil.copy(str(video_path), str(out_final_path))

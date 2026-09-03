@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 from app.config import GEMINI_API_KEY
 from app.models.schemas import VideoSettings, Timeline, TimelineSegment
 
-EFFECTS_LIST = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down", "rotate"]
+EFFECTS_LIST = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"]
 TRANSITIONS_LIST = ["fade", "dissolve", "zoom", "slideleft", "slideright", "push"]
 
 TEMPLATE_TITLE_PRESETS = {
