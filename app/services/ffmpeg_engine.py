@@ -133,7 +133,7 @@ def create_photo_motion_clip(
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "22",
-        "-threads", "0",
+        "-threads", "1",
         "-frames:v", str(frames),
         "-pix_fmt", "yuv420p",
         str(out_clip_path)
@@ -141,7 +141,7 @@ def create_photo_motion_clip(
 
     try:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=15)
-    except Exception as e:
+    except Exception:
         fallback_chain = f"scale={target_width}:{target_height},fps={fps},format=yuv420p"
         if color_filter in COLOR_FILTER_FFMPEG and COLOR_FILTER_FFMPEG[color_filter]:
             fallback_chain += f",{COLOR_FILTER_FFMPEG[color_filter]}"
@@ -156,12 +156,23 @@ def create_photo_motion_clip(
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", "22",
-            "-threads", "0",
+            "-threads", "1",
             "-frames:v", str(frames),
             "-pix_fmt", "yuv420p",
             str(out_clip_path)
         ]
-        subprocess.run(fallback_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+        try:
+            subprocess.run(fallback_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+        except Exception:
+            # Ultrafast 1-thread failsafe
+            subprocess.run([
+                FFMPEG_PATH, "-y",
+                "-loop", "1", "-framerate", "24", "-t", str(duration),
+                "-i", str(prep_img_path),
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-threads", "1",
+                str(out_clip_path)
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
 
     if prep_img_path.exists():
         try:
@@ -202,7 +213,7 @@ def normalize_video_clip(
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "22",
-        "-threads", "0",
+        "-threads", "1",
         "-t", str(duration),
         "-an",
         "-pix_fmt", "yuv420p",
@@ -323,7 +334,7 @@ def concatenate_clips_with_transitions(
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", "22",
-            "-threads", "0",
+            "-threads", "1",
             "-pix_fmt", "yuv420p",
             str(out_video_path)
         ]
