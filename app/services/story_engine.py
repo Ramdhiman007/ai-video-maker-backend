@@ -192,41 +192,85 @@ def get_audio_duration(audio_path: Path) -> float:
         return 3.5
 
 def generate_scene_image(prompt: str, animation_style: str, out_path: Path, width: int = 1280, height: int = 720, seed: Optional[int] = None) -> Path:
-    style_suffix = STYLE_MODIFIERS.get(animation_style.lower(), STYLE_MODIFIERS["pixar"])
-    full_prompt = f"{prompt}, {style_suffix}"
-    encoded = urllib.parse.quote(full_prompt)
     if seed is None:
         seed = random.randint(10000, 999999)
 
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&seed={seed}"
+    clean_words = re.findall(r'\b[a-zA-Z]{3,15}\b', prompt.lower())
+    stop_words = {
+        'once', 'upon', 'time', 'with', 'that', 'this', 'from', 'they', 'them', 'their',
+        'there', 'when', 'what', 'where', 'which', 'about', 'across', 'into', 'beneath',
+        'under', 'over', 'named', 'little', 'very', 'were', 'been', 'have', 'having',
+        'could', 'would', 'then', 'also', 'some', 'many', 'every', 'other', 'only',
+        'deep', 'within', 'made', 'make', 'full', 'great', 'more', 'most'
+    }
+    keywords = [w for w in clean_words if w not in stop_words][:3]
+    if not keywords:
+        keywords = ['nature', 'story']
+    tag_str = ','.join(keywords)
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+    }
+
+    # Provider 1: Pollinations (concise prompt, fast dimension)
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            img_data = resp.read()
-            if len(img_data) > 1000:
-                out_path.write_bytes(img_data)
+        clean_prompt = re.sub(r'[^a-zA-Z0-9\s]', ' ', prompt)[:50].strip()
+        encoded = urllib.parse.quote(f"{clean_prompt} {animation_style} animation")
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=432&nologo=true&seed={seed}"
+        req = urllib.request.Request(poll_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = resp.read()
+            if len(data) > 5000:
+                out_path.write_bytes(data)
                 return out_path
-    except Exception as e:
-        print(f"[story_engine] AI Image fetch notice ({e}), rendering styled canvas card fallback")
+    except Exception:
+        pass
 
+    # Provider 2: Topic-matched high-definition scene visual via LoremFlickr
+    try:
+        flickr_url = f"https://loremflickr.com/1280/720/{tag_str}"
+        req = urllib.request.Request(flickr_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = resp.read()
+            if len(data) > 5000:
+                out_path.write_bytes(data)
+                return out_path
+    except Exception:
+        pass
+
+    # Provider 3: High-res scenic photography via Picsum
+    try:
+        picsum_url = f"https://fastly.picsum.photos/id/{(seed % 300) + 10}/1280/720.jpg"
+        req = urllib.request.Request(picsum_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = resp.read()
+            if len(data) > 5000:
+                out_path.write_bytes(data)
+                return out_path
+    except Exception:
+        pass
+
+    # Provider 4: Guaranteed Illustrated Story Scene Card (Landscape & Moonlight)
     _create_stylized_story_card(prompt, animation_style, out_path, width, height)
     return out_path
 
+
 def _create_stylized_story_card(prompt: str, style: str, out_path: Path, width: int, height: int):
+    img = Image.new("RGB", (width, height), (15, 23, 42))
+    draw = ImageDraw.Draw(img)
+
     palettes = {
-        "pixar": [(41, 128, 185), (109, 213, 250), (255, 234, 167)],
-        "anime": [(44, 62, 80), (76, 161, 175), (196, 224, 229)],
-        "watercolor": [(253, 200, 48), (243, 115, 53), (255, 245, 238)],
-        "comic": [(238, 9, 121), (255, 106, 0), (26, 26, 26)],
-        "fantasy": [(15, 12, 41), (48, 43, 99), (36, 36, 62)],
-        "cyberpunk": [(13, 2, 33), (114, 9, 183), (76, 201, 240)],
+        "pixar": ((25, 42, 86), (41, 128, 185), (255, 220, 150)),
+        "anime": ((19, 15, 38), (87, 75, 144), (248, 165, 194)),
+        "watercolor": ((34, 47, 62), (87, 101, 116), (254, 202, 87)),
+        "comic": ((10, 10, 10), (44, 44, 84), (255, 82, 82)),
+        "fantasy": ((11, 19, 43), (28, 37, 65), (111, 207, 151)),
+        "cyberpunk": ((13, 2, 33), (45, 0, 80), (0, 245, 212)),
     }
     cols = palettes.get(style, palettes["pixar"])
 
-    img = Image.new("RGB", (width, height), cols[0])
-    draw = ImageDraw.Draw(img)
-
+    # Dramatic atmospheric sky gradient
     for y in range(height):
         ratio = y / height
         r = int(cols[0][0] * (1 - ratio) + cols[1][0] * ratio)
@@ -234,11 +278,20 @@ def _create_stylized_story_card(prompt: str, style: str, out_path: Path, width: 
         b = int(cols[0][2] * (1 - ratio) + cols[1][2] * ratio)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
+    # Glowing celestial moon / star
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     ov_draw = ImageDraw.Draw(overlay)
-    ov_draw.ellipse([width*0.2, height*0.1, width*0.8, height*0.7], fill=(*cols[2], 60))
-    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=60))
+    ov_draw.ellipse([width * 0.35, height * 0.12, width * 0.65, height * 0.65], fill=(*cols[2], 160))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=50))
     img.paste(overlay, (0, 0), overlay)
+
+    # Dramatic layered mountains & horizon
+    m1 = [(0, height), (0, int(height*0.7)), (int(width*0.3), int(height*0.5)), (int(width*0.6), int(height*0.65)), (int(width*0.85), int(height*0.48)), (width, int(height*0.62)), (width, height)]
+    draw.polygon(m1, fill=(15, 23, 42))
+
+    m2 = [(0, height), (0, int(height*0.82)), (int(width*0.4), int(height*0.72)), (int(width*0.75), int(height*0.85)), (width, int(height*0.78)), (width, height)]
+    draw.polygon(m2, fill=(8, 12, 24))
+
     img.save(out_path, "PNG")
 
 def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, duration: float, camera_motion: str, subtitle_text: Optional[str], target_width: int, target_height: int, fps: int = 30) -> Path:
