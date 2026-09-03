@@ -433,13 +433,13 @@ async def create_story_video(request: StoryVideoRequest, background_tasks: Backg
 
 # ─── Status ───────────────────────────────────────────────────────────────────
 
-@router.get("/status/{task_id}", response_model=TaskProgress)
+@router.get("/status/{task_id}")
 async def get_status(task_id: str):
     """Returns real-time task progress from Redis (or in-memory fallback)."""
     progress = get_task_progress(task_id)
     if not progress:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
-    return TaskProgress(**progress)
+    return progress
 
 
 # ─── Result ───────────────────────────────────────────────────────────────────

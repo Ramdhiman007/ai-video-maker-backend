@@ -77,7 +77,7 @@ class TaskProgress(BaseModel):
     current_step: str
     step_details: List[Dict[str, Any]]
     result_video_url: Optional[str] = None
-    timeline: Optional[Timeline] = None
+    timeline: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
 class StoryVideoRequest(BaseModel):

@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import math
 import json
@@ -284,6 +284,7 @@ def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, dur
         "-b:a", "192k",
         "-ar", "44100",
         "-ac", "2",
+        "-frames:v", str(frames),
         "-shortest",
         "-pix_fmt", "yuv420p",
         str(out_clip_path)
@@ -304,6 +305,7 @@ def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, dur
             "-preset", "veryfast",
             "-crf", "22",
             "-threads", "1",
+            "-frames:v", str(frames),
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
