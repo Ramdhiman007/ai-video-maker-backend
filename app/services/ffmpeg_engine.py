@@ -102,20 +102,20 @@ def create_photo_motion_clip(
         y_expr = "ih/2-(ih/zoom/2)"
     elif effect == "pan_left":
         zoom_expr = "1.15"
-        x_expr = "(1-on/d)*(iw-iw/zoom)"
+        x_expr = f"(1-on/{frames})*(iw-iw/zoom)"
         y_expr = "ih/2-(ih/zoom/2)"
     elif effect == "pan_right":
         zoom_expr = "1.15"
-        x_expr = "(on/d)*(iw-iw/zoom)"
+        x_expr = f"(on/{frames})*(iw-iw/zoom)"
         y_expr = "ih/2-(ih/zoom/2)"
     elif effect == "pan_up":
         zoom_expr = "1.15"
         x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "(1-on/d)*(ih-ih/zoom)"
+        y_expr = f"(1-on/{frames})*(ih-ih/zoom)"
     elif effect == "pan_down":
         zoom_expr = "1.15"
         x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "(on/d)*(ih-ih/zoom)"
+        y_expr = f"(on/{frames})*(ih-ih/zoom)"
 
     filter_chain = f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={target_width}x{target_height}:fps={fps},format=yuv420p"
     
