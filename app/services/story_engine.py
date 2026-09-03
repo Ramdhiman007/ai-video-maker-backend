@@ -195,63 +195,55 @@ def generate_scene_image(prompt: str, animation_style: str, out_path: Path, widt
     if seed is None:
         seed = random.randint(10000, 999999)
 
-    clean_words = re.findall(r'\b[a-zA-Z]{3,15}\b', prompt.lower())
-    stop_words = {
-        'once', 'upon', 'time', 'with', 'that', 'this', 'from', 'they', 'them', 'their',
-        'there', 'when', 'what', 'where', 'which', 'about', 'across', 'into', 'beneath',
-        'under', 'over', 'named', 'little', 'very', 'were', 'been', 'have', 'having',
-        'could', 'would', 'then', 'also', 'some', 'many', 'every', 'other', 'only',
-        'deep', 'within', 'made', 'make', 'full', 'great', 'more', 'most'
-    }
-    keywords = [w for w in clean_words if w not in stop_words][:3]
-    if not keywords:
-        keywords = ['nature', 'story']
-    tag_str = ','.join(keywords)
-
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
     }
 
-    # Provider 1: Pollinations (concise prompt, fast dimension)
+    style_keywords = {
+        'pixar': '3D Pixar Disney animated movie render, charming cute animated character, vibrant lighting, highly detailed CGI',
+        'anime': 'Makoto Shinkai Studio Ghibli anime style, breathtaking colorful animation, vibrant skies, anime aesthetic',
+        'watercolor': 'Whimsical children storybook watercolor art, soft expressive pastel painting, beautiful fairy tale',
+        'comic': 'Modern graphic novel comic book illustration, dynamic ink lines, bold pop art colors, animated style',
+        'fantasy': 'Epic high fantasy cinematic concept art, magical glowing atmosphere, mythical realm digital painting',
+        'cyberpunk': 'Futuristic neon cyberpunk animation, glowing holographic lights, synthwave vibrant colors, anime'
+    }
+    style_tag = style_keywords.get(animation_style.lower(), style_keywords['pixar'])
+
+    clean_prompt = re.sub(r'[^a-zA-Z0-9\s,\'-]', ' ', prompt)[:90].strip()
+    full_prompt = f"{clean_prompt}, {style_tag}"
+
+    # Attempt 1: Full animated character & scene prompt with 22s timeout
+    for attempt in range(2):
+        try:
+            current_seed = seed + (attempt * 137)
+            encoded = urllib.parse.quote(full_prompt if attempt == 0 else f"{clean_prompt}, {animation_style} animation")
+            poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=432&nologo=true&seed={current_seed}"
+            req = urllib.request.Request(poll_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=22) as resp:
+                data = resp.read()
+                if len(data) > 5000:
+                    out_path.write_bytes(data)
+                    return out_path
+        except Exception as e:
+            print(f"[story_engine] AI Animation generation attempt {attempt + 1} notice: {e}")
+            time.sleep(1)
+
+    # Attempt 2: Simplified keywords with animation reinforcement
     try:
-        clean_prompt = re.sub(r'[^a-zA-Z0-9\s]', ' ', prompt)[:50].strip()
-        encoded = urllib.parse.quote(f"{clean_prompt} {animation_style} animation")
-        poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=432&nologo=true&seed={seed}"
+        simple_prompt = f"{clean_prompt[:40]} {animation_style} animation"
+        encoded = urllib.parse.quote(simple_prompt)
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=720&height=480&nologo=true&seed={seed}"
         req = urllib.request.Request(poll_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=18) as resp:
             data = resp.read()
             if len(data) > 5000:
                 out_path.write_bytes(data)
                 return out_path
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[story_engine] Simplified AI animation notice: {e}")
 
-    # Provider 2: Topic-matched high-definition scene visual via LoremFlickr
-    try:
-        flickr_url = f"https://loremflickr.com/1280/720/{tag_str}"
-        req = urllib.request.Request(flickr_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = resp.read()
-            if len(data) > 5000:
-                out_path.write_bytes(data)
-                return out_path
-    except Exception:
-        pass
-
-    # Provider 3: High-res scenic photography via Picsum
-    try:
-        picsum_url = f"https://fastly.picsum.photos/id/{(seed % 300) + 10}/1280/720.jpg"
-        req = urllib.request.Request(picsum_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = resp.read()
-            if len(data) > 5000:
-                out_path.write_bytes(data)
-                return out_path
-    except Exception:
-        pass
-
-    # Provider 4: Guaranteed Illustrated Story Scene Card (Landscape & Moonlight)
+    # Fallback: Rich atmospheric animation card (moonlight, mountains, celestial gradient)
     _create_stylized_story_card(prompt, animation_style, out_path, width, height)
     return out_path
 
