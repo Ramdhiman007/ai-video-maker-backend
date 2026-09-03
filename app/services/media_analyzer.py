@@ -72,6 +72,7 @@ def generate_photo_thumbnail(file_path: Path) -> str:
                 img.save(thumb_path, "JPEG", quality=85)
         except Exception as e:
             print(f"Error creating photo thumbnail: {e}")
+            return file_path.name
     return thumb_filename
 
 def analyze_video(file_path: Path) -> Dict[str, Any]:

@@ -22,10 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Static mounts (mount if not using Cloudflare R2) ──────────
-if not USE_R2:
-    app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-    app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
+# ─── Static mounts (always serve uploads and outputs) ─────────
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 
 # ─── API routes ───────────────────────────────────────────────────────────────
 app.include_router(api_router, prefix="/api")
