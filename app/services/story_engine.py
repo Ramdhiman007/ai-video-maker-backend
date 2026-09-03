@@ -204,15 +204,32 @@ def generate_scene_image(
 ) -> Path:
     prompt_lower = prompt.lower()
 
-    # Step 1: Detect theme from narrative keywords
+    # Step 1: If GEMINI_API_KEY is configured, generate custom AI animation via Imagen 3
+    from app.config import GEMINI_API_KEY
+    if GEMINI_API_KEY:
+        try:
+            from google import genai
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            resp = client.models.generate_images(
+                model="imagen-3.0-generate-002",
+                prompt=f"{prompt}, {animation_style} animation style, charming characters, vibrant cinematic lighting, 4k CGI masterpiece",
+                config=dict(number_of_images=1, aspect_ratio="16:9")
+            )
+            if resp.generated_images:
+                out_path.write_bytes(resp.generated_images[0].image.image_bytes)
+                return out_path
+        except Exception as e:
+            print(f"[story_engine] Gemini Imagen notice ({e}), using master animation library")
+
+    # Step 2: Intelligent theme matching from narrative keywords
     theme = None
-    if any(k in prompt_lower for k in ["fox", "pip", "forest", "woodland", "starlight", "animal", "creature", "rabbit", "flora", "flower", "grove"]):
+    if any(k in prompt_lower for k in ["fox", "pip", "forest", "woodland", "starlight", "animal", "creature", "rabbit", "flora", "flower", "grove", "bear", "nature", "tree", "garden"]):
         theme = "fox"
-    elif any(k in prompt_lower for k in ["mars", "astronaut", "space", "star", "galaxy", "rocket", "spaceship", "alien", "crater", "rover", "orbit"]):
+    elif any(k in prompt_lower for k in ["mars", "astronaut", "space", "star", "galaxy", "rocket", "spaceship", "alien", "crater", "rover", "orbit", "cosmos", "planet"]):
         theme = "mars"
-    elif any(k in prompt_lower for k in ["castle", "palace", "king", "queen", "prince", "throne", "ballroom", "magic", "mirror", "butterfly", "kingdom", "gate"]):
+    elif any(k in prompt_lower for k in ["castle", "palace", "king", "queen", "prince", "princess", "throne", "ballroom", "magic", "mirror", "butterfly", "kingdom", "gate", "dragon", "royal", "knight", "sword"]):
         theme = "castle"
-    elif any(k in prompt_lower for k in ["samurai", "tokyo", "cyber", "neon", "robot", "blade", "katana", "ninja", "city", "drone", "alley"]):
+    elif any(k in prompt_lower for k in ["samurai", "tokyo", "cyber", "neon", "robot", "blade", "katana", "ninja", "city", "drone", "alley", "hologram", "future", "street", "car"]):
         theme = "samurai"
 
     # If theme detected and asset exists, use our pre-rendered 4K animation masterplate
