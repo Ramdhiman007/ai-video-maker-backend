@@ -28,9 +28,40 @@ def _get_redis():
         return None
 
 
-# ─── In-memory fallback (local dev) ──────────────────────────────────────────
-_MEDIA_STORE: Dict[str, Dict[str, Any]] = {}
-_TASK_STORE: Dict[str, Dict[str, Any]] = {}
+# ─── Multi-process fallback (SQLite WAL mode when Redis is not linked) ────────
+import sqlite3
+from app.config import TEMP_DIR
+
+_DB_PATH = TEMP_DIR / "app_store.db"
+
+def _init_sqlite():
+    try:
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(_DB_PATH, timeout=10.0) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("CREATE TABLE IF NOT EXISTS store (key TEXT PRIMARY KEY, val TEXT)")
+    except Exception as e:
+        print(f"[redis_store] SQLite fallback init warning: {e}")
+
+_init_sqlite()
+
+def _sqlite_set(key: str, val: str):
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=10.0) as conn:
+            conn.execute("INSERT OR REPLACE INTO store (key, val) VALUES (?, ?)", (key, val))
+    except Exception as e:
+        print(f"[redis_store] SQLite write error: {e}")
+
+def _sqlite_get(key: str) -> Optional[str]:
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=10.0) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM store WHERE key = ?", (key,))
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception as e:
+        print(f"[redis_store] SQLite read error: {e}")
+        return None
 
 _MEDIA_TTL = 60 * 60 * 25  # 25 hours
 _TASK_TTL  = 60 * 60 * 25  # 25 hours
@@ -43,7 +74,7 @@ def save_media_metadata(media_id: str, data: Dict[str, Any]):
     if r:
         r.setex(f"media:{media_id}", _MEDIA_TTL, json.dumps(data))
     else:
-        _MEDIA_STORE[media_id] = data
+        _sqlite_set(f"media:{media_id}", json.dumps(data))
 
 
 def get_media_metadata(media_id: str) -> Optional[Dict[str, Any]]:
@@ -51,7 +82,8 @@ def get_media_metadata(media_id: str) -> Optional[Dict[str, Any]]:
     if r:
         raw = r.get(f"media:{media_id}")
         return json.loads(raw) if raw else None
-    return _MEDIA_STORE.get(media_id)
+    raw = _sqlite_get(f"media:{media_id}")
+    return json.loads(raw) if raw else None
 
 
 def get_all_media_metadata() -> Dict[str, Dict[str, Any]]:
@@ -65,7 +97,17 @@ def get_all_media_metadata() -> Dict[str, Dict[str, Any]]:
                 media_id = k.replace("media:", "", 1)
                 result[media_id] = json.loads(raw)
         return result
-    return dict(_MEDIA_STORE)
+    result = {}
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=10.0) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, val FROM store WHERE key LIKE 'media:%'")
+            for k, val in cur.fetchall():
+                media_id = k.replace("media:", "", 1)
+                result[media_id] = json.loads(val)
+    except Exception:
+        pass
+    return result
 
 
 # ─── Task Progress ────────────────────────────────────────────────────────────
@@ -75,7 +117,7 @@ def save_task_progress(task_id: str, progress_data: Dict[str, Any]):
     if r:
         r.setex(f"task:{task_id}", _TASK_TTL, json.dumps(progress_data))
     else:
-        _TASK_STORE[task_id] = progress_data
+        _sqlite_set(f"task:{task_id}", json.dumps(progress_data))
 
 
 def get_task_progress(task_id: str) -> Optional[Dict[str, Any]]:
@@ -83,7 +125,8 @@ def get_task_progress(task_id: str) -> Optional[Dict[str, Any]]:
     if r:
         raw = r.get(f"task:{task_id}")
         return json.loads(raw) if raw else None
-    return _TASK_STORE.get(task_id)
+    raw = _sqlite_get(f"task:{task_id}")
+    return json.loads(raw) if raw else None
 
 
 def update_task_step(task_id: str, step_name: str, progress_pct: int, details: Optional[str] = None):
