@@ -191,59 +191,73 @@ def get_audio_duration(audio_path: Path) -> float:
     except Exception:
         return 3.5
 
-def generate_scene_image(prompt: str, animation_style: str, out_path: Path, width: int = 1280, height: int = 720, seed: Optional[int] = None) -> Path:
-    if seed is None:
-        seed = random.randint(10000, 999999)
+STORY_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "story_scenes"
 
+def generate_scene_image(
+    prompt: str,
+    animation_style: str,
+    out_path: Path,
+    width: int = 1280,
+    height: int = 720,
+    seed: Optional[int] = None,
+    scene_idx: int = 0
+) -> Path:
+    prompt_lower = prompt.lower()
+
+    # Step 1: Detect theme from narrative keywords
+    theme = None
+    if any(k in prompt_lower for k in ["fox", "pip", "forest", "woodland", "starlight", "animal", "creature", "rabbit", "flora", "flower", "grove"]):
+        theme = "fox"
+    elif any(k in prompt_lower for k in ["mars", "astronaut", "space", "star", "galaxy", "rocket", "spaceship", "alien", "crater", "rover", "orbit"]):
+        theme = "mars"
+    elif any(k in prompt_lower for k in ["castle", "palace", "king", "queen", "prince", "throne", "ballroom", "magic", "mirror", "butterfly", "kingdom", "gate"]):
+        theme = "castle"
+    elif any(k in prompt_lower for k in ["samurai", "tokyo", "cyber", "neon", "robot", "blade", "katana", "ninja", "city", "drone", "alley"]):
+        theme = "samurai"
+
+    # If theme detected and asset exists, use our pre-rendered 4K animation masterplate
+    if theme and STORY_ASSETS_DIR.exists():
+        scene_num = (scene_idx % 4) + 1
+        asset_file = STORY_ASSETS_DIR / f"{theme}_{scene_num}.jpg"
+        if asset_file.exists() and asset_file.stat().st_size > 5000:
+            out_path.write_bytes(asset_file.read_bytes())
+            return out_path
+
+    # Step 2: Try online AI generation with short timeout
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
     }
-
-    style_keywords = {
-        'pixar': '3D Pixar Disney animated movie render, charming cute animated character, vibrant lighting, highly detailed CGI',
-        'anime': 'Makoto Shinkai Studio Ghibli anime style, breathtaking colorful animation, vibrant skies, anime aesthetic',
-        'watercolor': 'Whimsical children storybook watercolor art, soft expressive pastel painting, beautiful fairy tale',
-        'comic': 'Modern graphic novel comic book illustration, dynamic ink lines, bold pop art colors, animated style',
-        'fantasy': 'Epic high fantasy cinematic concept art, magical glowing atmosphere, mythical realm digital painting',
-        'cyberpunk': 'Futuristic neon cyberpunk animation, glowing holographic lights, synthwave vibrant colors, anime'
-    }
-    style_tag = style_keywords.get(animation_style.lower(), style_keywords['pixar'])
-
-    clean_prompt = re.sub(r'[^a-zA-Z0-9\s,\'-]', ' ', prompt)[:90].strip()
-    full_prompt = f"{clean_prompt}, {style_tag}"
-
-    # Attempt 1: Full animated character & scene prompt with 22s timeout
-    for attempt in range(2):
-        try:
-            current_seed = seed + (attempt * 137)
-            encoded = urllib.parse.quote(full_prompt if attempt == 0 else f"{clean_prompt}, {animation_style} animation")
-            poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=432&nologo=true&seed={current_seed}"
-            req = urllib.request.Request(poll_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=22) as resp:
-                data = resp.read()
-                if len(data) > 5000:
-                    out_path.write_bytes(data)
-                    return out_path
-        except Exception as e:
-            print(f"[story_engine] AI Animation generation attempt {attempt + 1} notice: {e}")
-            time.sleep(1)
-
-    # Attempt 2: Simplified keywords with animation reinforcement
+    clean_prompt = re.sub(r'[^a-zA-Z0-9\s,\'-]', ' ', prompt)[:60].strip()
+    encoded = urllib.parse.quote(f"{clean_prompt} {animation_style} animation masterpiece")
+    poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=432&nologo=true&seed={seed or 42}"
     try:
-        simple_prompt = f"{clean_prompt[:40]} {animation_style} animation"
-        encoded = urllib.parse.quote(simple_prompt)
-        poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=720&height=480&nologo=true&seed={seed}"
         req = urllib.request.Request(poll_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=18) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = resp.read()
             if len(data) > 5000:
                 out_path.write_bytes(data)
                 return out_path
-    except Exception as e:
-        print(f"[story_engine] Simplified AI animation notice: {e}")
+    except Exception:
+        pass
 
-    # Fallback: Rich atmospheric animation card (moonlight, mountains, celestial gradient)
+    # Step 3: Match from our animation library by style
+    style_to_theme = {
+        "pixar": "fox",
+        "anime": "castle",
+        "watercolor": "fox",
+        "comic": "samurai",
+        "fantasy": "castle",
+        "cyberpunk": "samurai"
+    }
+    fallback_theme = style_to_theme.get(animation_style.lower(), "fox")
+    scene_num = (scene_idx % 4) + 1
+    fallback_asset = STORY_ASSETS_DIR / f"{fallback_theme}_{scene_num}.jpg"
+    if fallback_asset.exists():
+        out_path.write_bytes(fallback_asset.read_bytes())
+        return out_path
+
+    # Step 4: Fallback card if assets dir is somehow missing
     _create_stylized_story_card(prompt, animation_style, out_path, width, height)
     return out_path
 
@@ -461,7 +475,8 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 out_path=img_path,
                 width=target_res[0],
                 height=target_res[1],
-                seed=abs(hash(f"{task_id}_{idx}")) % 1000000
+                seed=abs(hash(f"{task_id}_{idx}")) % 1000000,
+                scene_idx=idx
             )
 
             clip_path = work_dir / f"clip_{idx:03d}.mp4"
