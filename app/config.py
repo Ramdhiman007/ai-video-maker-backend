@@ -43,6 +43,10 @@ ALLOWED_ORIGINS: list[str] = (
     ["*"] if _cors_raw.strip() == "*"
     else [o.strip() for o in _cors_raw.split(",") if o.strip()]
 )
+# Allow local preview server to test against Railway backend
+for _loc in ["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:3000"]:
+    if "*" not in ALLOWED_ORIGINS and _loc not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(_loc)
 
 # ─── Redis ────────────────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "")
