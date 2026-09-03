@@ -481,3 +481,39 @@ def debug_tasks():
     except Exception as e:
         return {"error": str(e)}
     return {"tasks": rows}
+
+
+@router.get("/diagnose-segment")
+def diagnose_segment():
+    import traceback, time
+    from pathlib import Path
+    from app.config import UPLOAD_DIR, TEMP_DIR
+    from app.services.ffmpeg_engine import prepare_segment_clip
+    from app.models.schemas import TimelineSegment
+
+    logs = []
+    t0 = time.time()
+    try:
+        available = list(UPLOAD_DIR.glob("*.png")) + list(UPLOAD_DIR.glob("*.jpg"))
+        if not available:
+            return {"error": "No images in UPLOAD_DIR"}
+        test_img = available[0]
+        logs.append(f"Testing with image: {test_img.name} ({test_img.stat().st_size} bytes)")
+
+        seg = TimelineSegment(
+            id="diag_seg_1",
+            type="photo",
+            file=test_img.name,
+            media_id="diag_1",
+            start_time=0.0,
+            duration=3.5,
+            effect="zoom_in",
+            transition="fade"
+        )
+        work_dir = TEMP_DIR / "diag_test"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        clip = prepare_segment_clip(seg, [1920, 1080], work_dir, 0)
+        logs.append(f"Generated clip: {clip.name} ({clip.stat().st_size} bytes) in {time.time()-t0:.2f}s")
+        return {"status": "success", "elapsed": round(time.time()-t0, 2), "logs": logs}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc(), "logs": logs}
