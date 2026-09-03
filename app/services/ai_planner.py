@@ -77,26 +77,37 @@ def plan_timeline_algorithmic(
     bpm = music_item.get("bpm", 120.0) if music_item else 120.0
     music_duration = music_item.get("duration", 30.0) if music_item else 30.0
 
-    total_media_dur = sum(m.get("duration", 4.0) if m["media_type"] == "video" else 4.0 for m in photos_and_videos)
+    item_count = len(photos_and_videos)
+    # Estimate natural duration: 3.5s per photo, up to 6s per video clip
+    natural_durations = [
+        min(6.0, max(2.5, m.get("duration", 4.0))) if m["media_type"] == "video" else 3.5
+        for m in photos_and_videos
+    ]
+    total_natural_dur = sum(natural_durations)
 
-    if settings.target_duration == "unlimited":
-        if music_item:
-            target_total_dur = max(total_media_dur, music_duration)
-        else:
-            target_total_dur = total_media_dur
-    elif settings.target_duration == "120":
-        target_total_dur = 120.0
-    elif settings.target_duration == "60":
-        target_total_dur = 60.0
+    if settings.target_duration == "15":
+        target_total_dur = 15.0
     elif settings.target_duration == "30":
         target_total_dur = 30.0
-    elif settings.target_duration == "15":
-        target_total_dur = 15.0
-    else:
-        if music_item:
-            target_total_dur = max(music_duration, total_media_dur)
+    elif settings.target_duration == "60":
+        target_total_dur = 60.0
+    elif settings.target_duration == "90":
+        target_total_dur = 90.0
+    elif settings.target_duration == "120":
+        target_total_dur = 120.0
+    else:  # "auto" or "unlimited" (default)
+        # Smart adaptive duration: show each photo/video naturally without excessive duplicate looping
+        if item_count == 1:
+            target_total_dur = max(8.0, total_natural_dur * 2)
+        elif item_count <= 3:
+            target_total_dur = max(10.0, total_natural_dur)
+        elif item_count <= 8:
+            target_total_dur = min(35.0, total_natural_dur)
         else:
-            target_total_dur = max(15.0, total_media_dur)
+            target_total_dur = min(60.0, total_natural_dur)
+
+        if music_item and music_duration > 0:
+            target_total_dur = min(target_total_dur, music_duration)
 
     beat_step = 4 if bpm >= 110 else 2
     beat_times = []
@@ -106,12 +117,12 @@ def plan_timeline_algorithmic(
     segments: List[TimelineSegment] = []
     current_time = 0.0
     media_idx = 0
-    item_count = len(photos_and_videos)
 
     preset_titles = TEMPLATE_TITLE_PRESETS.get(settings.template, TEMPLATE_TITLE_PRESETS["travel"])
     chosen_title = settings.title if settings.title and settings.title != "My AI Video" else random.choice(preset_titles)
 
-    max_loops = max(item_count * 5, int(target_total_dur / 2))
+    # Cap maximum segments to prevent memory overload or excessive render time
+    max_loops = min(16, max(item_count * 2, int(target_total_dur / 2.5)))
 
     while current_time < target_total_dur and len(segments) < max_loops:
         media_item = photos_and_videos[media_idx % item_count]
@@ -124,10 +135,10 @@ def plan_timeline_algorithmic(
             else:
                 seg_duration = 3.5
         else:
-            seg_duration = 3.5 if media_item["media_type"] == "photo" else min(8.0, media_item.get("duration", 5.0))
+            seg_duration = 3.5 if media_item["media_type"] == "photo" else min(6.0, media_item.get("duration", 4.0))
 
-        seg_duration = max(2.0, min(10.0, seg_duration))
-        if settings.target_duration != "unlimited" and current_time + seg_duration > target_total_dur + 1.0:
+        seg_duration = max(2.0, min(8.0, seg_duration))
+        if current_time + seg_duration > target_total_dur + 1.0:
             seg_duration = max(1.5, target_total_dur - current_time)
 
         effect = random.choice(EFFECTS_LIST) if media_item["media_type"] == "photo" else "none"

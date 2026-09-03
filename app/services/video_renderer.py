@@ -41,15 +41,31 @@ def render_video_from_timeline(task_id: str, timeline: Timeline, music_volume: f
                 f"Processing segment {idx + 1}/{total_segs}: {seg.file} ({seg.effect})"
             )
 
-            clip_path = prepare_segment_clip(
-                segment=seg,
-                target_res=timeline.resolution,
-                out_dir=work_dir,
-                index=idx,
-            )
-            clip_paths.append(clip_path)
-            transitions.append(seg.transition)
-            durations.append(seg.duration)
+            seg_path = UPLOAD_DIR / seg.file
+            if not seg_path.exists():
+                available = list(UPLOAD_DIR.glob("*.png")) + list(UPLOAD_DIR.glob("*.jpg")) + list(UPLOAD_DIR.glob("*.mp4"))
+                if available:
+                    seg.file = available[0].name
+                else:
+                    continue
+
+            try:
+                clip_path = prepare_segment_clip(
+                    segment=seg,
+                    target_res=timeline.resolution,
+                    out_dir=work_dir,
+                    index=idx,
+                )
+                if clip_path and clip_path.exists() and clip_path.stat().st_size > 0:
+                    clip_paths.append(clip_path)
+                    transitions.append(seg.transition)
+                    durations.append(seg.duration)
+            except Exception as clip_err:
+                print(f"[renderer] Warning: Failed clip for {seg.file}: {clip_err}")
+                continue
+
+        if not clip_paths:
+            raise RuntimeError("No media clips could be generated for the video.")
 
         update_task_step(task_id, "Adding transitions", 82, "Merging clips with crossfades and motion cuts")
 
