@@ -575,3 +575,35 @@ def diagnose_segment():
         return {"status": "success", "elapsed": round(time.time()-t0, 2), "logs": logs}
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc(), "logs": logs}
+
+
+@router.get("/diagnose-ai-image")
+def diagnose_ai_image(prompt: str = "A cute little red fox in glowing enchanted forest, 3D Pixar style"):
+    import traceback, time, urllib.request, urllib.parse
+    t0 = time.time()
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=720&height=480&nologo=true"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+            return {
+                "status": "success",
+                "bytes": len(data),
+                "elapsed": round(time.time() - t0, 2),
+                "content_type": resp.headers.get("Content-Type"),
+                "url": url[:60] + "..."
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "elapsed": round(time.time() - t0, 2),
+            "url": url[:60] + "..."
+        }
