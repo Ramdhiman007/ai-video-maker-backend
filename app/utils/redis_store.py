@@ -129,7 +129,7 @@ def get_task_progress(task_id: str) -> Optional[Dict[str, Any]]:
     return json.loads(raw) if raw else None
 
 
-def update_task_step(task_id: str, step_name: str, progress_pct: int, details: Optional[str] = None):
+def update_task_step(task_id: str, step_name: str, progress_pct: int, details: Optional[str] = None, agent_log: Optional[Dict[str, str]] = None):
     task = get_task_progress(task_id)
     if not task:
         task = {
@@ -138,6 +138,7 @@ def update_task_step(task_id: str, step_name: str, progress_pct: int, details: O
             "progress": 0,
             "current_step": step_name,
             "step_details": [],
+            "agent_logs": [],
             "result_video_url": None,
             "error": None,
         }
@@ -145,6 +146,13 @@ def update_task_step(task_id: str, step_name: str, progress_pct: int, details: O
     task["progress"] = progress_pct
     task["current_step"] = step_name
     task["status"] = "processing"
+    task.setdefault("agent_logs", [])
+
+    if agent_log:
+        task["agent_logs"].append(agent_log)
+        # Keep last 30 logs
+        if len(task["agent_logs"]) > 30:
+            task["agent_logs"] = task["agent_logs"][-30:]
 
     # Update step checklist
     found = False
@@ -169,3 +177,4 @@ def update_task_step(task_id: str, step_name: str, progress_pct: int, details: O
             step["status"] = "completed"
 
     save_task_progress(task_id, task)
+

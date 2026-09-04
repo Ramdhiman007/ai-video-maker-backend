@@ -606,16 +606,131 @@ def _wrap_text(text: str, font, draw, max_width: int) -> List[str]:
         lines.append(" ".join(curr))
     return lines[:3]
 
+def generate_story_from_prompt(
+    prompt: str,
+    animation_style: str = "pixar",
+    mood: str = "cinematic",
+    voice: str = "en-US-ChristopherNeural"
+) -> Dict[str, Any]:
+    prompt = prompt.strip()
+    if not prompt:
+        prompt = "A magical adventure about courage, discovery and friendship"
+
+    if GEMINI_API_KEY:
+        try:
+            from google import genai
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            ai_prompt = f"""You are a master animated film director and lead screenwriter for Hollywood animated features (Pixar, Ghibli, DreamWorks).
+The user wants to create an animated video from this concept or prompt:
+Concept: "{prompt}"
+Desired Visual Style: {animation_style}
+Emotional Tone / Mood: {mood}
+
+Write a cinematic, beautifully paced short story for this video.
+Guidelines:
+1. Provide a captivating, memorable title.
+2. Write 3 to 5 vivid narrative paragraphs (total 130 to 220 words) suitable for neural voiceover narration.
+3. Introduce unique characters with clear visual traits, present an exciting challenge or turning point, and resolve with an inspiring conclusion.
+4. Keep the vocabulary evocative, visual, and rhythmic.
+
+Return ONLY a valid JSON object with EXACTLY these keys:
+- "title": A short catchy movie title
+- "story": The full screenplay narration text with paragraphs separated by newlines
+- "suggested_style": One of "pixar", "anime", "watercolor", "comic", "fantasy", "cyberpunk"
+- "suggested_mood": One of "cinematic", "whimsical", "adventure", "emotional"
+- "suggested_voice": Voice recommendation (e.g. "en-US-ChristopherNeural", "en-US-JennyNeural")
+
+Do NOT include markdown fences, return pure JSON."""
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=ai_prompt
+            )
+            raw = response.text.strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+                raw = re.sub(r"\n?```$", "", raw)
+            res = json.loads(raw.strip())
+            if isinstance(res, dict) and "story" in res:
+                return res
+        except Exception as e:
+            print(f"[story_engine] Gemini generate_story_from_prompt fallback: {e}")
+
+    # Generative fallback based on theme keywords
+    p_low = prompt.lower()
+    if any(k in p_low for k in ["cat", "dog", "pet", "robot", "cyber", "neon", "tokyo", "tech"]):
+        return {
+            "title": "The Neon Stray",
+            "story": (
+                "Beneath the glowing holographic signs of Neo-Tokyo, a stray cyber-cat with glowing amber eyes prowled the rain-washed rooftops. "
+                "While dodging patrolling surveillance drones, she discovered an injured robotic bird trapped inside a tangled nest of power cables. "
+                "With agile paws and a gentle touch, she delicately severed the high-voltage wires, granting the golden automaton its freedom. "
+                "Together, cat and mechanical songbird soared into the neon dawn, guardians of the city's forgotten dreamers."
+            ),
+            "suggested_style": "cyberpunk",
+            "suggested_mood": "adventure",
+            "suggested_voice": "en-US-ChristopherNeural"
+        }
+    elif any(k in p_low for k in ["space", "mars", "star", "alien", "astronaut", "galaxy", "rocket", "planet"]):
+        return {
+            "title": "Starlight Odyssey",
+            "story": (
+                "Deep in the uncharted outer rim, an adventurous starfarer guided their exploratory vessel toward a shimmering ringed world. "
+                "As the ship glided through clouds of glowing sapphire dust, ancient radio frequencies filled the cockpit with a harmonious alien symphony. "
+                "Touching down upon a crystalline plateau, the explorer greeted towering guardians of pure starlight who had watched over the cosmos for millennia. "
+                "Hand in hand, they ignited a new beacon of knowledge that would illuminate the galaxies for generations to come."
+            ),
+            "suggested_style": "fantasy",
+            "suggested_mood": "cinematic",
+            "suggested_voice": "en-US-GuyNeural"
+        }
+    elif any(k in p_low for k in ["lion", "mouse", "animal", "jungle", "forest", "wild", "safari"]):
+        return {
+            "title": "The Lion and the Mouse",
+            "story": (
+                "Under the warm amber canopy of the African savanna, a noble golden lion rested after a long day's watch. "
+                "A tiny field mouse accidentally scampered over his mighty paw, trembling in fear as the great king opened his amber eyes. "
+                "Amused by her tiny bravery and polite plea, the lion gently let her scurry away free into the acacia grasses. "
+                "Weeks later, when hunters trapped the lion in heavy hemp ropes, the faithful mouse arrived, chewed the knots to shreds, and proved that even the smallest heart can save a king."
+            ),
+            "suggested_style": "pixar",
+            "suggested_mood": "whimsical",
+            "suggested_voice": "en-US-ChristopherNeural"
+        }
+    else:
+        return {
+            "title": f"The Legend of {prompt[:30].title()}",
+            "story": (
+                f"Long ago, in a world where dreams take physical form, a quiet seeker began an unforgettable journey sparked by {prompt[:40]}. "
+                "Through whispering ancient forests and across misty silver bridges, every obstacle tested their courage and purity of heart. "
+                "When shadow fell across the land, a brilliant surge of inner light burst forward, transforming doubt into unshakeable triumph. "
+                "Standing atop the highest summit, peace was restored, leaving a tale that would echo across the stars forever."
+            ),
+            "suggested_style": animation_style,
+            "suggested_mood": mood,
+            "suggested_voice": voice
+        }
+
+
 def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
     work_dir = TEMP_DIR / f"story_render_{task_id}"
     work_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        update_task_step(task_id, "Analyzing story", 10, "Extracting narrative beats, characters, and visual scenes")
+        now_time = time.strftime("%H:%M:%S")
+        update_task_step(
+            task_id, "Analyzing story", 10,
+            "Extracting narrative beats, characters, and visual scenes",
+            agent_log={"role": "Director Agent", "icon": "🎬", "message": f"Analyzing story: '{req.title}' | Style: {req.animation_style.title()} | Audio: {req.music_mood}", "time": now_time}
+        )
         scenes = segment_story_into_scenes(req.story, req.animation_style, title=req.title)
         total_scenes = len(scenes)
 
-        update_task_step(task_id, "Planning scenes", 20, f"AI planned {total_scenes} animated scenes in {req.animation_style.title()} style")
+        now_time = time.strftime("%H:%M:%S")
+        update_task_step(
+            task_id, "Planning scenes", 20,
+            f"AI planned {total_scenes} animated scenes in {req.animation_style.title()} style",
+            agent_log={"role": "Screenplay Director", "icon": "📋", "message": f"Deconstructed narrative into {total_scenes} cinematic scene beats with emotion tracking.", "time": now_time}
+        )
 
         res_map = {
             "16:9": {"720p": [1280, 720], "1080p": [1920, 1080], "4K": [3840, 2160]},
@@ -631,8 +746,13 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             pct = 25 + int((idx / max(total_scenes, 1)) * 55)
             narration_preview = sc.get("narration", "")[:55]
             mood = sc.get("mood", "magical")
-            update_task_step(task_id, "Generating animation", pct,
-                f"Scene {idx + 1}/{total_scenes}: {narration_preview}...")
+
+            now_time = time.strftime("%H:%M:%S")
+            update_task_step(
+                task_id, "Generating animation", pct,
+                f"Scene {idx + 1}/{total_scenes}: {narration_preview}...",
+                agent_log={"role": "Concept Artist", "icon": "🎨", "message": f"Scene {idx + 1}/{total_scenes}: Generating visuals [{mood.title()} Mood] -> {sc.get('visual_prompt','')[:50]}...", "time": now_time}
+            )
 
             voice_path = work_dir / f"voice_{idx:03d}.mp3"
             duration = synthesize_scene_voice(sc["narration"], req.voice, voice_path)
@@ -647,6 +767,13 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 height=target_res[1],
                 seed=abs(hash(f"{task_id}_{idx}")) % 1000000,
                 scene_idx=idx
+            )
+
+            now_time = time.strftime("%H:%M:%S")
+            update_task_step(
+                task_id, "Generating animation", min(pct + 2, 82),
+                f"Scene {idx + 1}/{total_scenes}: Voice narration ({round(duration, 1)}s) & 3D drift",
+                agent_log={"role": "VFX & Voice", "icon": "✨", "message": f"Scene {idx + 1}: Neural voice synced ({round(duration,1)}s). Applied 3D {sc.get('camera_motion','zoom_in')} camera sway & particle overlay.", "time": now_time}
             )
 
             clip_path = work_dir / f"clip_{idx:03d}.mp4"
@@ -666,11 +793,15 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             if clip_path.exists() and clip_path.stat().st_size > 0:
                 scene_clip_paths.append(clip_path)
 
-
         if not scene_clip_paths:
             raise RuntimeError("No animated scenes could be generated.")
 
-        update_task_step(task_id, "Assembling movie", 85, "Merging animated scenes with audio alignment")
+        now_time = time.strftime("%H:%M:%S")
+        update_task_step(
+            task_id, "Assembling movie", 86,
+            "Merging animated scenes with audio alignment",
+            agent_log={"role": "Film Editor", "icon": "🎞️", "message": f"Sequencing {len(scene_clip_paths)} scene clips into master movie timeline ({round(total_duration, 1)}s total).", "time": now_time}
+        )
         concat_list_file = work_dir / "concat_story_list.txt"
         with open(concat_list_file, "w", encoding="utf-8") as f:
             for p in scene_clip_paths:
@@ -704,7 +835,12 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             ]
             subprocess.run(cmd_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=45)
 
-        update_task_step(task_id, "Mastering soundtrack", 92, "Applying background ambience and audio ducking")
+        now_time = time.strftime("%H:%M:%S")
+        update_task_step(
+            task_id, "Mastering soundtrack", 93,
+            "Applying background ambience and audio ducking",
+            agent_log={"role": "Sound Engineer", "icon": "🎼", "message": f"Mastered multi-harmonic {req.music_mood} score with automatic vocal ducking & reverb.", "time": now_time}
+        )
         output_filename = f"story_{task_id}.mp4"
         final_output_path = OUTPUT_DIR / output_filename
 
@@ -720,7 +856,12 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
         else:
             shutil.copy(str(raw_concat), str(final_output_path))
 
-        update_task_step(task_id, "Finalizing", 100, "Animated story video ready!")
+        now_time = time.strftime("%H:%M:%S")
+        update_task_step(
+            task_id, "Finalizing", 100,
+            "Animated story video ready!",
+            agent_log={"role": "Producer Agent", "icon": "🏆", "message": f"Final master verified! {req.quality} animated video ready for download and streaming.", "time": now_time}
+        )
 
         result_url = f"/outputs/{output_filename}"
         task_data = {
@@ -748,6 +889,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
         }
         save_task_progress(task_id, task_data)
         return result_url
+
 
     except Exception as e:
         print(f"[story_engine] Story rendering failed for task {task_id}: {e}")

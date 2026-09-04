@@ -15,8 +15,10 @@ from app.config import (
 )
 from app.models.schemas import (
     MediaItem, UploadResponse, CreateVideoRequest,
-    VideoSettings, TaskProgress, Timeline, StoryVideoRequest
+    VideoSettings, TaskProgress, Timeline, StoryVideoRequest,
+    AgentStoryPromptRequest
 )
+
 from app.utils.redis_store import (
     save_media_metadata, get_media_metadata,
     save_task_progress, get_task_progress, update_task_step
@@ -404,7 +406,28 @@ def run_story_video_task(task_id: str, req: StoryVideoRequest):
         })
 
 
+@router.post("/agent-write-story")
+async def agent_write_story(request: AgentStoryPromptRequest):
+    """
+    Autonomous AI Screenplay Agent:
+    Takes an initial concept, prompt or brief idea and writes a polished,
+    multi-scene animated story screenplay with title, style, and mood recommendations.
+    """
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+
+    from app.services.story_engine import generate_story_from_prompt
+    result = generate_story_from_prompt(
+        prompt=request.prompt,
+        animation_style=request.animation_style or "pixar",
+        mood=request.mood or "cinematic",
+        voice=request.voice or "en-US-ChristopherNeural"
+    )
+    return result
+
+
 @router.post("/create-story-video", response_model=TaskProgress)
+
 async def create_story_video(request: StoryVideoRequest, background_tasks: BackgroundTasks):
     """Converts a story of any length into an animated video with voiceover and artwork."""
     if not request.story.strip():

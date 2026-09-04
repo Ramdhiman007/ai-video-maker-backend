@@ -76,6 +76,7 @@ class TaskProgress(BaseModel):
     progress: int           # 0 to 100
     current_step: str
     step_details: List[Dict[str, Any]]
+    agent_logs: Optional[List[Dict[str, Any]]] = []
     result_video_url: Optional[str] = None
     timeline: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -90,4 +91,11 @@ class StoryVideoRequest(BaseModel):
     enable_subtitles: bool = True
     music_mood: str = "cinematic"           # 'cinematic', 'whimsical', 'adventure', 'emotional', 'none'
     music_volume: float = 0.18
+
+class AgentStoryPromptRequest(BaseModel):
+    prompt: str
+    animation_style: Optional[str] = "pixar"
+    mood: Optional[str] = "cinematic"
+    voice: Optional[str] = "en-US-ChristopherNeural"
+
 
