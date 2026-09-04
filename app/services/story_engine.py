@@ -697,18 +697,24 @@ Do NOT include markdown fences, return pure JSON."""
             "suggested_voice": "en-US-ChristopherNeural"
         }
     else:
+        words = prompt.split()
+        clean_words = [w for w in words if w.lower() not in ["a", "an", "the", "about", "who", "which", "that"]]
+        title_topic = " ".join(clean_words[:4]).title() if clean_words else "The Secret Realm"
+        title = f"The Legend of {title_topic}"
+        narrative_focus = " ".join(words[:10])
         return {
-            "title": f"The Legend of {prompt[:30].title()}",
+            "title": title,
             "story": (
-                f"Long ago, in a world where dreams take physical form, a quiet seeker began an unforgettable journey sparked by {prompt[:40]}. "
-                "Through whispering ancient forests and across misty silver bridges, every obstacle tested their courage and purity of heart. "
-                "When shadow fell across the land, a brilliant surge of inner light burst forward, transforming doubt into unshakeable triumph. "
-                "Standing atop the highest summit, peace was restored, leaving a tale that would echo across the stars forever."
+                f"Long ago, in a wondrous realm where legends take wing, a brave journey began guided by {narrative_focus}. "
+                "Through whispering enchanted valleys and across glowing starlit horizons, each step revealed hidden wonders beyond imagination. "
+                "When great trials tested their courage, an unexpected surge of inner strength turned the tide toward triumph. "
+                "As the dawn broke in brilliant gold, peace and harmony were restored to the land forever."
             ),
             "suggested_style": animation_style,
             "suggested_mood": mood,
             "suggested_voice": voice
         }
+
 
 
 def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
