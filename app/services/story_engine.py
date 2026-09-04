@@ -69,7 +69,7 @@ MOOD_FREQUENCIES = {
     "emotional": 261.63,
 }
 
-def segment_story_into_scenes(story_text: str, animation_style: str = "pixar") -> List[Dict[str, Any]]:
+def segment_story_into_scenes(story_text: str, animation_style: str = "pixar", title: str = "") -> List[Dict[str, Any]]:
     story_text = story_text.strip()
     if not story_text:
         story_text = "Once upon a time in a magical land, a great adventure began."
@@ -78,32 +78,44 @@ def segment_story_into_scenes(story_text: str, animation_style: str = "pixar") -
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
-            prompt = f"""You are a master animated film director.
-Break down this story into distinct narrative visual scenes for an animated video.
-Style: {animation_style}
+            prompt = f"""You are a professional animated film director creating a scene-by-scene visual storyboard.
+
+Carefully read the story below and break it into animated video scenes. Each scene covers one narrative beat.
+
+Story Title: "{title or 'Animated Story'}"
+Animation Style: {animation_style}
 Story:
 \"\"\"{story_text}\"\"\"
 
-Return ONLY a valid JSON array of objects with keys:
-- "narration": The voiceover text for this scene (1 to 2 sentences).
-- "visual_prompt": A rich visual scene description for image generation.
-- "camera_motion": One of "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down".
+Generate as many scenes as the story naturally requires (minimum 2, no maximum limit).
 
-Do not include markdown ticks, return pure raw JSON array."""
+For each scene return a JSON object with EXACTLY these keys:
+- "narration": The exact story sentences for this scene (1-3 sentences, natural storytelling voice).
+- "visual_prompt": A highly detailed image generation prompt. MUST include the actual characters from the story (animals, people, creatures, objects) with their visual descriptions (color, size, expression). Include the specific setting, lighting, atmosphere. Do NOT add animation style here.
+- "camera_motion": One of exactly: zoom_in, zoom_out, pan_left, pan_right
+- "mood": One of exactly: magical, exciting, sad, triumphant, scary, peaceful
+
+Return ONLY a raw valid JSON array. No markdown fences, no explanation text, no trailing comma."""
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt
             )
             raw = response.text.strip()
             if raw.startswith("```"):
-                raw = re.sub(r"^```[a-zA-Z]*\n", "", raw)
-                raw = re.sub(r"\n```$", "", raw)
+                raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+                raw = re.sub(r"\n?```$", "", raw)
+            raw = raw.strip()
             scenes = json.loads(raw)
             if isinstance(scenes, list) and len(scenes) > 0:
+                # Ensure every scene has a mood field
+                for sc in scenes:
+                    if "mood" not in sc:
+                        sc["mood"] = "magical"
                 return scenes
         except Exception as e:
             print(f"[story_engine] Gemini scene segmentation fallback: {e}")
 
+    # Fallback: split into scenes by paragraph/sentence grouping
     paragraphs = [p.strip() for p in re.split(r'\n\s*\n', story_text) if p.strip()]
     raw_sentences = []
     for p in paragraphs:
@@ -119,7 +131,8 @@ Do not include markdown ticks, return pure raw JSON array."""
     scenes = []
     curr_narration = []
     curr_words = 0
-    motions = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"]
+    motions = ["zoom_in", "zoom_out", "pan_left", "pan_right"]
+    moods = ["magical", "peaceful", "exciting", "triumphant"]
 
     for sent in raw_sentences:
         w_count = len(sent.split())
@@ -129,6 +142,7 @@ Do not include markdown ticks, return pure raw JSON array."""
                 "narration": narr,
                 "visual_prompt": _extract_visual_keywords(narr),
                 "camera_motion": motions[len(scenes) % len(motions)],
+                "mood": moods[len(scenes) % len(moods)],
             })
             curr_narration = [sent]
             curr_words = w_count
@@ -142,9 +156,11 @@ Do not include markdown ticks, return pure raw JSON array."""
             "narration": narr,
             "visual_prompt": _extract_visual_keywords(narr),
             "camera_motion": motions[len(scenes) % len(motions)],
+            "mood": moods[len(scenes) % len(moods)],
         })
 
     return scenes
+
 
 def _extract_visual_keywords(sentence: str) -> str:
     cleaned = re.sub(r'^(and|but|so|then|however|meanwhile|suddenly|later),\s*', '', sentence, flags=re.IGNORECASE)
@@ -193,6 +209,76 @@ def get_audio_duration(audio_path: Path) -> float:
 
 STORY_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "story_scenes"
 
+MOOD_PARTICLE_MAP = {
+    "magical":    "magical.mp4",
+    "peaceful":   "magical.mp4",
+    "exciting":   "exciting.mp4",
+    "sad":        "sad.mp4",
+    "triumphant": "triumphant.mp4",
+    "scary":      "scary.mp4",
+}
+
+def _try_stable_horde(prompt: str, style: str, out_path: Path, timeout_sec: int = 22) -> bool:
+    """Try to generate image via Stable Horde (free community GPU cluster)."""
+    style_tags = {
+        "pixar":      "3D Pixar Disney CGI render, charming expressive characters, vibrant cinematic lighting, masterpiece",
+        "anime":      "Studio Ghibli anime style, colorful breathtaking animation, beautiful skies, expressive art",
+        "watercolor": "whimsical storybook watercolor illustration, soft pastel painting, fairy tale children book art",
+        "comic":      "modern graphic novel comic book art, dynamic bold ink lines, vivid pop art colors, dramatic angles",
+        "fantasy":    "epic high fantasy cinematic concept art, magical glowing atmosphere, volumetric lighting masterpiece",
+        "cyberpunk":  "futuristic neon cyberpunk animation, glowing holographic lights, rain slicked streets, synthwave",
+    }
+    style_tag = style_tags.get(style.lower(), style_tags["pixar"])
+    full_prompt = f"{prompt[:110]}, {style_tag}"
+    try:
+        url = "https://stablehorde.net/api/v2/generate/async"
+        payload = json.dumps({
+            "prompt": full_prompt,
+            "params": {
+                "steps": 18,
+                "width": 768,
+                "height": 448,
+                "sampler_name": "k_euler",
+                "cfg_scale": 7
+            },
+            "nsfw": False,
+            "censor_nsfw": True,
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers={
+            "Content-Type": "application/json",
+            "apikey": "0000000000",
+            "Client-Agent": "AIVideoMaker:1.0:anon"
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            job_id = result.get("id")
+        if not job_id:
+            return False
+
+        status_url = f"https://stablehorde.net/api/v2/generate/status/{job_id}"
+        t0 = time.time()
+        while time.time() - t0 < timeout_sec:
+            time.sleep(2.5)
+            req2 = urllib.request.Request(status_url, headers={"Client-Agent": "AIVideoMaker:1.0:anon"})
+            with urllib.request.urlopen(req2, timeout=6) as resp2:
+                st = json.loads(resp2.read().decode("utf-8"))
+                if st.get("done") and st.get("generations"):
+                    img_url = st["generations"][0]["img"]
+                    req3 = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req3, timeout=12) as resp3:
+                        img_bytes = resp3.read()
+                    temp_dl = out_path.parent / f"tmp_horde_{out_path.stem}.webp"
+                    temp_dl.write_bytes(img_bytes)
+                    with Image.open(temp_dl) as im:
+                        im.convert("RGB").resize((1280, 720), Image.LANCZOS).save(out_path, "PNG")
+                    temp_dl.unlink(missing_ok=True)
+                    return True
+        return False
+    except Exception as e:
+        print(f"[story_engine] Horde notice: {e}")
+        return False
+
+
 def generate_scene_image(
     prompt: str,
     animation_style: str,
@@ -210,29 +296,55 @@ def generate_scene_image(
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
+            style_modifier = STYLE_MODIFIERS.get(animation_style.lower(), STYLE_MODIFIERS["pixar"])
             resp = client.models.generate_images(
                 model="imagen-3.0-generate-002",
-                prompt=f"{prompt}, {animation_style} animation style, charming characters, vibrant cinematic lighting, 4k CGI masterpiece",
+                prompt=f"{prompt}, {style_modifier}, 4K resolution",
                 config=dict(number_of_images=1, aspect_ratio="16:9")
             )
             if resp.generated_images:
                 out_path.write_bytes(resp.generated_images[0].image.image_bytes)
+                print(f"[story_engine] Imagen 3 generated scene {scene_idx}")
                 return out_path
         except Exception as e:
-            print(f"[story_engine] Gemini Imagen notice ({e}), using master animation library")
+            print(f"[story_engine] Gemini Imagen notice ({e}), trying Horde...")
 
-    # Step 2: Intelligent theme matching from narrative keywords
+    # Step 2: Try Stable Horde (free community GPU cluster — generates story-specific art)
+    if _try_stable_horde(prompt, animation_style, out_path):
+        print(f"[story_engine] Stable Horde generated scene {scene_idx}")
+        return out_path
+
+    # Step 3: Intelligent theme matching from narrative keywords — expanded set
     theme = None
-    if any(k in prompt_lower for k in ["fox", "pip", "forest", "woodland", "starlight", "animal", "creature", "rabbit", "flora", "flower", "grove", "bear", "nature", "tree", "garden"]):
+    # Animal / nature stories
+    if any(k in prompt_lower for k in ["lion", "tiger", "bear", "elephant", "leopard", "jaguar",
+                                        "fox", "wolf", "deer", "monkey", "giraffe", "zebra",
+                                        "jungle", "forest", "woodland", "savanna", "nature", "animal",
+                                        "creature", "wildlife", "hunt", "roar", "growl", "tree", "grove"]):
         theme = "fox"
-    elif any(k in prompt_lower for k in ["mars", "astronaut", "space", "star", "galaxy", "rocket", "spaceship", "alien", "crater", "rover", "orbit", "cosmos", "planet"]):
+    # Small animals / village / moral tales
+    elif any(k in prompt_lower for k in ["mouse", "rat", "rabbit", "squirrel", "hamster", "bird",
+                                          "tiny", "small", "little", "village", "cottage", "meadow",
+                                          "garden", "home", "flower", "bee", "butterfly", "fairy"]):
+        theme = "fox"
+    # Space / sci-fi
+    elif any(k in prompt_lower for k in ["mars", "astronaut", "space", "star", "galaxy", "rocket",
+                                          "spaceship", "alien", "crater", "rover", "orbit", "cosmos",
+                                          "planet", "nebula", "universe", "comet", "asteroid"]):
         theme = "mars"
-    elif any(k in prompt_lower for k in ["castle", "palace", "king", "queen", "prince", "princess", "throne", "ballroom", "magic", "mirror", "butterfly", "kingdom", "gate", "dragon", "royal", "knight", "sword"]):
+    # Kingdom / fantasy
+    elif any(k in prompt_lower for k in ["castle", "palace", "king", "queen", "prince", "princess",
+                                          "throne", "ballroom", "magic", "mirror", "kingdom", "gate",
+                                          "dragon", "royal", "knight", "sword", "crown", "wizard",
+                                          "enchanted", "spell", "potion", "dungeon", "tower"]):
         theme = "castle"
-    elif any(k in prompt_lower for k in ["samurai", "tokyo", "cyber", "neon", "robot", "blade", "katana", "ninja", "city", "drone", "alley", "hologram", "future", "street", "car"]):
+    # Cyberpunk / future / action
+    elif any(k in prompt_lower for k in ["samurai", "tokyo", "cyber", "neon", "robot", "blade",
+                                          "katana", "ninja", "city", "drone", "alley", "hologram",
+                                          "future", "street", "car", "tech", "mech", "android"]):
         theme = "samurai"
 
-    # If theme detected and asset exists, use our pre-rendered 4K animation masterplate
+    # Use pre-rendered 4K animation masterplate
     if theme and STORY_ASSETS_DIR.exists():
         scene_num = (scene_idx % 4) + 1
         asset_file = STORY_ASSETS_DIR / f"{theme}_{scene_num}.jpg"
@@ -240,12 +352,12 @@ def generate_scene_image(
             out_path.write_bytes(asset_file.read_bytes())
             return out_path
 
-    # Step 2: Try online AI generation with short timeout
+    # Step 4: Quick Pollinations attempt (short timeout)
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "image/*,*/*;q=0.8"
     }
-    clean_prompt = re.sub(r'[^a-zA-Z0-9\s,\'-]', ' ', prompt)[:60].strip()
+    clean_prompt = re.sub(r"[^a-zA-Z0-9\s,'-]", " ", prompt)[:60].strip()
     encoded = urllib.parse.quote(f"{clean_prompt} {animation_style} animation masterpiece")
     poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=432&nologo=true&seed={seed or 42}"
     try:
@@ -258,7 +370,7 @@ def generate_scene_image(
     except Exception:
         pass
 
-    # Step 3: Match from our animation library by style
+    # Step 5: Style-based masterplate fallback
     style_to_theme = {
         "pixar": "fox",
         "anime": "castle",
@@ -274,9 +386,11 @@ def generate_scene_image(
         out_path.write_bytes(fallback_asset.read_bytes())
         return out_path
 
-    # Step 4: Fallback card if assets dir is somehow missing
+    # Step 6: Absolute last resort — stylized gradient card
     _create_stylized_story_card(prompt, animation_style, out_path, width, height)
     return out_path
+
+
 
 
 def _create_stylized_story_card(prompt: str, style: str, out_path: Path, width: int, height: int):
@@ -317,7 +431,7 @@ def _create_stylized_story_card(prompt: str, style: str, out_path: Path, width: 
 
     img.save(out_path, "PNG")
 
-def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, duration: float, camera_motion: str, subtitle_text: Optional[str], target_width: int, target_height: int, fps: int = 30) -> Path:
+def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, duration: float, camera_motion: str, subtitle_text: Optional[str], target_width: int, target_height: int, fps: int = 30, mood: str = "magical") -> Path:
     frames = max(int(duration * fps), 30)
 
     prep_img_path = out_clip_path.parent / f"prep_{out_clip_path.stem}.png"
@@ -341,7 +455,13 @@ def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, dur
         x_expr = f"(on/{frames})*(iw-iw/zoom)+8*sin(2*PI*it/2.5)"
         y_expr = "ih/2-(ih/zoom/2)+6*cos(2*PI*it/2.5)"
 
-    particle_path = STORY_ASSETS_DIR.parent / "starlight_particles.mp4"
+    # Select mood-matched particle overlay
+    particle_name = MOOD_PARTICLE_MAP.get(mood, "magical.mp4")
+    particle_path = STORY_ASSETS_DIR.parent / "particles" / particle_name
+    if not particle_path.exists():
+        # Legacy fallback to old starlight_particles.mp4
+        particle_path = STORY_ASSETS_DIR.parent / "starlight_particles.mp4"
+
     if particle_path.exists():
         filter_complex = (
             f"[0:v]scale={int(target_width*1.1)}x{int(target_height*1.1)},zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={target_width}x{target_height}:fps={fps}[bg];"
@@ -492,10 +612,10 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
 
     try:
         update_task_step(task_id, "Analyzing story", 10, "Extracting narrative beats, characters, and visual scenes")
-        scenes = segment_story_into_scenes(req.story, req.animation_style)
+        scenes = segment_story_into_scenes(req.story, req.animation_style, title=req.title)
         total_scenes = len(scenes)
 
-        update_task_step(task_id, "Planning scenes", 20, f"Structured {total_scenes} animated scenes in {req.animation_style.title()} style")
+        update_task_step(task_id, "Planning scenes", 20, f"AI planned {total_scenes} animated scenes in {req.animation_style.title()} style")
 
         res_map = {
             "16:9": {"720p": [1280, 720], "1080p": [1920, 1080], "4K": [3840, 2160]},
@@ -509,7 +629,10 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
 
         for idx, sc in enumerate(scenes):
             pct = 25 + int((idx / max(total_scenes, 1)) * 55)
-            update_task_step(task_id, "Generating animation", pct, f"Scene {idx + 1}/{total_scenes}: Generating voiceover & artwork")
+            narration_preview = sc.get("narration", "")[:55]
+            mood = sc.get("mood", "magical")
+            update_task_step(task_id, "Generating animation", pct,
+                f"Scene {idx + 1}/{total_scenes}: {narration_preview}...")
 
             voice_path = work_dir / f"voice_{idx:03d}.mp3"
             duration = synthesize_scene_voice(sc["narration"], req.voice, voice_path)
@@ -536,11 +659,13 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 camera_motion=sc.get("camera_motion", "zoom_in"),
                 subtitle_text=sub_text,
                 target_width=target_res[0],
-                target_height=target_res[1]
+                target_height=target_res[1],
+                mood=mood
             )
 
             if clip_path.exists() and clip_path.stat().st_size > 0:
                 scene_clip_paths.append(clip_path)
+
 
         if not scene_clip_paths:
             raise RuntimeError("No animated scenes could be generated.")
@@ -644,26 +769,63 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 pass
 
 def _mix_story_background_score(video_path: Path, out_final_path: Path, duration: float, mood: str, music_vol: float, work_dir: Path):
-    freq = MOOD_FREQUENCIES.get(mood, 220.0)
+    # Rich multi-layer harmonic ambient score
+    mood_config = {
+        "cinematic":  {"base": 220.0, "fifth": 330.0, "third": 275.0,  "tempo": "slow"},
+        "whimsical":  {"base": 392.0, "fifth": 523.3, "third": 466.2,  "tempo": "medium"},
+        "adventure":  {"base": 293.66,"fifth": 440.0, "third": 349.23, "tempo": "fast"},
+        "emotional":  {"base": 261.63,"fifth": 392.0, "third": 311.13, "tempo": "slow"},
+        "upbeat":     {"base": 349.23,"fifth": 523.3, "third": 440.0,  "tempo": "medium"},
+        "none":       {"base": 220.0, "fifth": 330.0, "third": 275.0,  "tempo": "slow"},
+    }
+    mc = mood_config.get(mood, mood_config["cinematic"])
     bg_music = work_dir / "ambient_bg.wav"
 
-    subprocess.run([
-        FFMPEG_PATH, "-y",
-        "-f", "lavfi",
-        "-i", f"sine=frequency={freq}:duration={duration + 2},lowpass=f=400,volume=0.3",
-        "-c:a", "pcm_s16le",
-        str(bg_music)
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    fade_in_dur = min(3.0, duration * 0.12)
+    fade_out_start = max(0.0, duration - 2.5)
+    total_gen = duration + 4.0
 
-    fade_start = max(0.0, duration - 1.5)
-    audio_filter = f"[1:a]volume={music_vol},afade=t=out:st={fade_start}:d=1.5[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2"
+    # Three layered harmonics: base + perfect fifth + major third
+    # Low-pass filtered for warm pad feel, then reverb/echo for cinematic depth
+    lavfi_filter = (
+        f"sine=frequency={mc['base']}:duration={total_gen}[a1];"
+        f"sine=frequency={mc['fifth']}:duration={total_gen},volume=0.55[a2];"
+        f"sine=frequency={mc['third']}:duration={total_gen},volume=0.35[a3];"
+        f"[a1][a2][a3]amix=inputs=3:duration=first[mixed];"
+        f"[mixed]lowpass=f=600,aecho=0.65:0.45:90:0.25,volume=0.42,"
+        f"afade=t=in:st=0:d={fade_in_dur:.1f},"
+        f"afade=t=out:st={fade_out_start:.1f}:d=2.5[out]"
+    )
+
+    try:
+        subprocess.run([
+            FFMPEG_PATH, "-y",
+            "-f", "lavfi",
+            "-i", lavfi_filter,
+            "-map", "[out]",
+            "-c:a", "pcm_s16le",
+            str(bg_music)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except Exception:
+        # Simple fallback
+        freq = mc["base"]
+        subprocess.run([
+            FFMPEG_PATH, "-y", "-f", "lavfi",
+            "-i", f"sine=frequency={freq}:duration={total_gen},lowpass=f=400,volume=0.3",
+            "-c:a", "pcm_s16le", str(bg_music)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    fade_filter = (
+        f"[1:a]volume={music_vol},afade=t=out:st={fade_out_start:.1f}:d=2.0[bg];"
+        f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2"
+    )
 
     cmd = [
         FFMPEG_PATH, "-y",
         "-i", str(video_path),
         "-i", str(bg_music),
         "-c:v", "copy",
-        "-filter_complex", audio_filter,
+        "-filter_complex", fade_filter,
         "-c:a", "aac",
         "-b:a", "192k",
         "-shortest",
@@ -673,3 +835,4 @@ def _mix_story_background_score(video_path: Path, out_final_path: Path, duration
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
     except Exception:
         shutil.copy(str(video_path), str(out_final_path))
+
