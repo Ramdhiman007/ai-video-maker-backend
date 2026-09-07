@@ -680,55 +680,64 @@ def render_title_card_clip(
     clean_title = (title or "AI Video Production").strip()
     clean_sub = (subtitle or "").strip()
 
+    fps = min(fps, 15)
+    c_w = min(width, 1280)
+    c_h = min(height, 720)
+    total_frames = max(int(duration * fps), 15)
+
     for f_idx in range(total_frames):
         progress = f_idx / max(total_frames, 1)
 
-        img = Image.new("RGB", (width, height), (10, 15, 30))
+        img = Image.new("RGB", (c_w, c_h), (10, 15, 30))
         draw = ImageDraw.Draw(img)
 
         # Subtle cyber/ambient grid lines
         grid_step = 60
         drift_offset = int((progress * 30) % grid_step)
-        for gx in range(drift_offset, width, grid_step):
-            draw.line([(gx, 0), (gx, height)], fill=(18, 26, 48), width=1)
-        for gy in range(drift_offset, height, grid_step):
-            draw.line([(0, gy), (width, gy)], fill=(18, 26, 48), width=1)
+        for gx in range(drift_offset, c_w, grid_step):
+            draw.line([(gx, 0), (gx, c_h)], fill=(18, 26, 48), width=1)
+        for gy in range(drift_offset, c_h, grid_step):
+            draw.line([(0, gy), (c_w, gy)], fill=(18, 26, 48), width=1)
 
         # Center glowing decorative badge
-        cy = height // 2
+        cy = c_h // 2
         tag_text = "AI VIDEO PRODUCTION"
         t_bbox = draw.textbbox((0, 0), tag_text, font=tag_font)
         tw = t_bbox[2] - t_bbox[0] + 32
-        th = max(34, int(height * 0.038))
-        draw.rounded_rectangle([(width // 2 - tw // 2, cy - 140), (width // 2 + tw // 2, cy - 140 + th)], radius=8, fill=(99, 102, 241, 180))
-        draw.text((width // 2 - (t_bbox[2] - t_bbox[0]) // 2, cy - 140 + 7), tag_text, fill=(255, 255, 255), font=tag_font)
+        th = max(34, int(c_h * 0.038))
+        draw.rounded_rectangle([(c_w // 2 - tw // 2, cy - 110), (c_w // 2 + tw // 2, cy - 110 + th)], radius=8, fill=(99, 102, 241, 180))
+        draw.text((c_w // 2 - (t_bbox[2] - t_bbox[0]) // 2, cy - 110 + 6), tag_text, fill=(255, 255, 255), font=tag_font)
 
         # Main Title
         m_bbox = draw.textbbox((0, 0), clean_title, font=title_font)
         mw = m_bbox[2] - m_bbox[0]
         # Text shadow
-        draw.text((width // 2 - mw // 2 + 2, cy - 80 + 2), clean_title, fill=(0, 0, 0), font=title_font)
-        draw.text((width // 2 - mw // 2, cy - 80), clean_title, fill=(255, 255, 255), font=title_font)
+        draw.text((c_w // 2 - mw // 2 + 2, cy - 65 + 2), clean_title, fill=(0, 0, 0), font=title_font)
+        draw.text((c_w // 2 - mw // 2, cy - 65), clean_title, fill=(255, 255, 255), font=title_font)
 
         # Subtitle
         if clean_sub:
-            sub_lines = _wrap_text(clean_sub, sub_font, draw, int(width * 0.75))
+            sub_lines = _wrap_text(clean_sub, sub_font, draw, int(c_w * 0.75))
             for s_i, s_line in enumerate(sub_lines[:2]):
                 s_bbox = draw.textbbox((0, 0), s_line, font=sub_font)
                 sw = s_bbox[2] - s_bbox[0]
-                draw.text((width // 2 - sw // 2, cy + 10 + s_i * 36), s_line, fill=(148, 163, 184), font=sub_font)
+                draw.text((c_w // 2 - sw // 2, cy + 10 + s_i * 30), s_line, fill=(148, 163, 184), font=sub_font)
 
         frame_path = frames_dir / f"frame_{f_idx:04d}.png"
         img.save(frame_path, "PNG")
+        del img
 
     # Assemble with FFmpeg
     cmd = [
         FFMPEG_PATH, "-y",
+        "-threads", "1",
         "-framerate", str(fps),
         "-i", str(frames_dir / "frame_%04d.png"),
+        "-vf", f"scale={width}:{height}:flags=bilinear,fps={fps}",
         "-c:v", "libx264",
         "-preset", "veryfast",
-        "-crf", "20",
+        "-crf", "22",
+        "-threads", "1",
         "-pix_fmt", "yuv420p",
         str(out_path)
     ]
@@ -738,6 +747,8 @@ def render_title_card_clip(
         shutil.rmtree(frames_dir)
     except Exception:
         pass
+    import gc
+    gc.collect()
 
     return out_path
 
@@ -1136,7 +1147,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 update_task_step(
                     task_id, "Generating animation", pct,
                     f"Scene {idx + 1}/{total_scenes}: Rendering interactive architectural diagram...",
-                    agent_log={"role": "Diagram Engine", "icon": "📊", "message": f"Scene {idx + 1}: Generated 30fps animated flowchart with pulsing data signals.", "time": now_time}
+                    agent_log={"role": "Diagram Engine", "icon": "📊", "message": f"Scene {idx + 1}: Generated animated flowchart with pulsing data signals.", "time": now_time}
                 )
                 diagram_engine = DiagramEngine()
                 diagram_engine.generate_diagram_clip(
@@ -1145,7 +1156,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                     out_path=raw_video_path,
                     width=target_res[0],
                     height=target_res[1],
-                    fps=30
+                    fps=15
                 )
                 compose_scene_clip(
                     raw_video_path=raw_video_path,
@@ -1175,7 +1186,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                     out_path=raw_video_path,
                     width=target_res[0],
                     height=target_res[1],
-                    fps=30
+                    fps=15
                 )
                 compose_scene_clip(
                     raw_video_path=raw_video_path,
@@ -1205,7 +1216,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                     out_path=raw_video_path,
                     width=target_res[0],
                     height=target_res[1],
-                    fps=30
+                    fps=15
                 )
                 compose_scene_clip(
                     raw_video_path=raw_video_path,
@@ -1644,16 +1655,16 @@ def regenerate_single_scene(
 
     if media_type == "diagram":
         diag_eng = DiagramEngine()
-        diag_eng.generate_diagram_clip(sc_spec, duration, raw_video_path, target_res[0], target_res[1], fps=30)
+        diag_eng.generate_diagram_clip(sc_spec, duration, raw_video_path, target_res[0], target_res[1], fps=15)
         compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
 
     elif media_type == "title_scene":
-        render_title_card_clip(timeline.get("title", "AI Video"), narration, duration, raw_video_path, target_res[0], target_res[1], fps=30)
+        render_title_card_clip(timeline.get("title", "AI Video"), narration, duration, raw_video_path, target_res[0], target_res[1], fps=15)
         compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
 
     elif media_type in ("screen_recording", "browser_automation"):
         rec = ScreenRecordingEngine()
-        rec.generate_tutorial_clip(sc_spec, duration, raw_video_path, target_res[0], target_res[1], fps=30)
+        rec.generate_tutorial_clip(sc_spec, duration, raw_video_path, target_res[0], target_res[1], fps=15)
         compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
 
     elif media_type in ("real_ai_video", "image_to_video"):
