@@ -16,7 +16,7 @@ from app.config import (
 from app.models.schemas import (
     MediaItem, UploadResponse, CreateVideoRequest,
     VideoSettings, TaskProgress, Timeline, StoryVideoRequest,
-    AgentStoryPromptRequest
+    AgentStoryPromptRequest, RegenerateSceneRequest
 )
 
 from app.utils.redis_store import (
@@ -540,9 +540,74 @@ async def regenerate_video(task_id: str, background_tasks: BackgroundTasks):
     return initial_task
 
 
+@router.post("/story/{task_id}/scene/{scene_id}/regenerate")
+async def regenerate_story_scene(
+    task_id: str,
+    scene_id: int,
+    request: Optional[RegenerateSceneRequest] = None
+):
+    """
+    Single-Scene Regeneration Endpoint:
+    Regenerates only the specified scene in isolation and updates the project master video
+    without re-rendering untouched scenes.
+    """
+    try:
+        from app.services.story_engine import regenerate_single_scene
+        req_prompt = request.custom_prompt if request else None
+        req_media_type = request.custom_media_type if request else None
+        req_narration = request.custom_narration if request else None
+        req_camera = request.custom_camera_motion if request else None
+
+        result = regenerate_single_scene(
+            task_id=task_id,
+            scene_number=scene_id,
+            custom_prompt=req_prompt,
+            custom_media_type=req_media_type,
+            custom_narration=req_narration,
+            custom_camera_motion=req_camera
+        )
+        return result
+    except FileNotFoundError as fe:
+        raise HTTPException(status_code=404, detail=str(fe))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scene regeneration failed: {e}")
+
+
+@router.get("/story/{task_id}/metadata")
+async def get_story_metadata(task_id: str):
+    """
+    Returns YouTube-ready publishing metadata (Title, Chapters timestamps, Tags)
+    and Character/Environment Bible for the given story task.
+    """
+    task = get_task_progress(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+
+    yt_meta = task.get("youtube_metadata") or (task.get("timeline") or {}).get("youtube_metadata")
+    bible = task.get("bible") or (task.get("timeline") or {}).get("bible")
+
+    if not yt_meta:
+        scenes_dir = OUTPUT_DIR / f"story_{task_id}_scenes"
+        yt_file = scenes_dir / "youtube_metadata.json"
+        if yt_file.exists():
+            try:
+                import json
+                yt_meta = json.loads(yt_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    return {
+        "task_id": task_id,
+        "youtube_metadata": yt_meta,
+        "bible": bible,
+        "scenes": (task.get("timeline") or {}).get("scenes", [])
+    }
+
+
 # ─── Delete ───────────────────────────────────────────────────────────────────
 
 @router.delete("/video/{task_id}")
+
 async def delete_video(task_id: str):
     """Deletes task state. R2 files expire automatically via lifecycle rules."""
     task = get_task_progress(task_id)

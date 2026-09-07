@@ -30,6 +30,11 @@ from app.services.video_providers import (
     VideoGenerationError,
 )
 from app.services.screen_recording_engine import ScreenRecordingEngine
+from app.services.director_agent import VideoDirectorAgent
+from app.services.diagram_engine import DiagramEngine
+from app.services.emphasis_engine import EmphasisEngine
+from app.services.quality_checker import SceneQualityChecker
+from app.services.metadata_generator import YouTubeMetadataGenerator
 
 STYLE_MODIFIERS = {
     "pixar": (
@@ -574,35 +579,167 @@ def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, dur
     return out_clip_path
 
 
-def _create_subtitle_overlay(text: str, width: int, height: int, out_png: Path) -> Path:
+def _create_subtitle_overlay(
+    text: Optional[str],
+    width: int,
+    height: int,
+    out_png: Path,
+    emphasis_keywords: Optional[List[str]] = None,
+    scene_number: Optional[int] = None,
+    total_scenes: Optional[int] = None,
+) -> Path:
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
+
     font_size = max(24, int(height * 0.040))
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
+        font_bold = ImageFont.truetype("arialbd.ttf", max(20, int(height * 0.026)))
     except Exception:
         font = ImageFont.load_default()
+        font_bold = font
 
-    max_w = int(width * 0.85)
-    lines = _wrap_text(text, font, draw, max_w)
-    line_height = int(font_size * 1.35)
-    total_text_h = len(lines) * line_height
-    start_y = int(height * 0.82) - (total_text_h // 2)
+    # Top-Left Step / Scene Badge
+    if scene_number is not None:
+        step_str = f"STEP {scene_number:02d}" if not total_scenes else f"STEP {scene_number:02d}/{total_scenes:02d}"
+        s_bbox = draw.textbbox((0, 0), step_str, font=font_bold)
+        sw = s_bbox[2] - s_bbox[0] + 32
+        sh = max(38, int(height * 0.042))
+        draw.rounded_rectangle([(36, 36), (36 + sw, 36 + sh)], radius=10, fill=(99, 102, 241, 230))
+        draw.text((52, 44), step_str, fill=(255, 255, 255, 255), font=font_bold)
 
-    for i, line in enumerate(lines):
-        bbox = draw.textbbox((0, 0), line, font=font)
-        lw = bbox[2] - bbox[0]
-        lx = (width - lw) // 2
-        ly = start_y + i * line_height
+    # Top-Right Emphasis / Action Callout Badge
+    if emphasis_keywords and len(emphasis_keywords) > 0:
+        primary_kw = str(emphasis_keywords[0]).strip()
+        if primary_kw:
+            badge_text = f"ACTION: {primary_kw.upper()}"
+            bbox = draw.textbbox((0, 0), badge_text, font=font_bold)
+            bw = bbox[2] - bbox[0] + 36
+            bh = max(38, int(height * 0.042))
+            bx2 = width - 36
+            bx1 = bx2 - bw
+            by1 = 36
+            by2 = by1 + bh
+            # Glow backdrop & pill
+            draw.rounded_rectangle([(bx1 - 2, by1 - 2), (bx2 + 2, by2 + 2)], radius=12, fill=(99, 102, 241, 100))
+            draw.rounded_rectangle([(bx1, by1), (bx2, by2)], radius=10, fill=(15, 23, 42, 230), outline=(56, 189, 248, 255), width=2)
+            draw.text((bx1 + 18, by1 + 8), badge_text, fill=(56, 189, 248, 255), font=font_bold)
 
-        padding = 14
-        pill = [lx - padding, ly - 4, lx + lw + padding, ly + line_height - 2]
-        draw.rounded_rectangle(pill, radius=10, fill=(0, 0, 0, 175))
-        draw.text((lx + 2, ly + 2), line, fill=(0, 0, 0, 220), font=font)
-        draw.text((lx, ly), line, fill=(255, 255, 255, 255), font=font)
+    # Bottom Center Subtitles
+    if text:
+        max_w = int(width * 0.85)
+        lines = _wrap_text(text, font, draw, max_w)
+        line_height = int(font_size * 1.35)
+        total_text_h = len(lines) * line_height
+        start_y = int(height * 0.82) - (total_text_h // 2)
+
+        for i, line in enumerate(lines):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            lw = bbox[2] - bbox[0]
+            lx = (width - lw) // 2
+            ly = start_y + i * line_height
+
+            padding = 14
+            pill = [lx - padding, ly - 4, lx + lw + padding, ly + line_height - 2]
+            draw.rounded_rectangle(pill, radius=10, fill=(0, 0, 0, 175))
+            draw.text((lx + 2, ly + 2), line, fill=(0, 0, 0, 220), font=font)
+            draw.text((lx, ly), line, fill=(255, 255, 255, 255), font=font)
 
     img.save(out_png, "PNG")
     return out_png
+
+
+def render_title_card_clip(
+    title: str,
+    subtitle: str,
+    duration: float,
+    out_path: Path,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30
+) -> Path:
+    """
+    Renders an animated title sequence with glowing dark backdrop,
+    subtle zoom/drift effect, and crisp typography.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    frames_dir = out_path.parent / f"title_frames_{out_path.stem}"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    total_frames = max(int(duration * fps), 30)
+
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", max(44, int(height * 0.065)))
+        sub_font = ImageFont.truetype("arial.ttf", max(24, int(height * 0.032)))
+        tag_font = ImageFont.truetype("arialbd.ttf", max(20, int(height * 0.024)))
+    except Exception:
+        title_font = ImageFont.load_default()
+        sub_font = title_font
+        tag_font = title_font
+
+    clean_title = (title or "AI Video Production").strip()
+    clean_sub = (subtitle or "").strip()
+
+    for f_idx in range(total_frames):
+        progress = f_idx / max(total_frames, 1)
+
+        img = Image.new("RGB", (width, height), (10, 15, 30))
+        draw = ImageDraw.Draw(img)
+
+        # Subtle cyber/ambient grid lines
+        grid_step = 60
+        drift_offset = int((progress * 30) % grid_step)
+        for gx in range(drift_offset, width, grid_step):
+            draw.line([(gx, 0), (gx, height)], fill=(18, 26, 48), width=1)
+        for gy in range(drift_offset, height, grid_step):
+            draw.line([(0, gy), (width, gy)], fill=(18, 26, 48), width=1)
+
+        # Center glowing decorative badge
+        cy = height // 2
+        tag_text = "AI VIDEO PRODUCTION"
+        t_bbox = draw.textbbox((0, 0), tag_text, font=tag_font)
+        tw = t_bbox[2] - t_bbox[0] + 32
+        th = max(34, int(height * 0.038))
+        draw.rounded_rectangle([(width // 2 - tw // 2, cy - 140), (width // 2 + tw // 2, cy - 140 + th)], radius=8, fill=(99, 102, 241, 180))
+        draw.text((width // 2 - (t_bbox[2] - t_bbox[0]) // 2, cy - 140 + 7), tag_text, fill=(255, 255, 255), font=tag_font)
+
+        # Main Title
+        m_bbox = draw.textbbox((0, 0), clean_title, font=title_font)
+        mw = m_bbox[2] - m_bbox[0]
+        # Text shadow
+        draw.text((width // 2 - mw // 2 + 2, cy - 80 + 2), clean_title, fill=(0, 0, 0), font=title_font)
+        draw.text((width // 2 - mw // 2, cy - 80), clean_title, fill=(255, 255, 255), font=title_font)
+
+        # Subtitle
+        if clean_sub:
+            sub_lines = _wrap_text(clean_sub, sub_font, draw, int(width * 0.75))
+            for s_i, s_line in enumerate(sub_lines[:2]):
+                s_bbox = draw.textbbox((0, 0), s_line, font=sub_font)
+                sw = s_bbox[2] - s_bbox[0]
+                draw.text((width // 2 - sw // 2, cy + 10 + s_i * 36), s_line, fill=(148, 163, 184), font=sub_font)
+
+        frame_path = frames_dir / f"frame_{f_idx:04d}.png"
+        img.save(frame_path, "PNG")
+
+    # Assemble with FFmpeg
+    cmd = [
+        FFMPEG_PATH, "-y",
+        "-framerate", str(fps),
+        "-i", str(frames_dir / "frame_%04d.png"),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        str(out_path)
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+    try:
+        shutil.rmtree(frames_dir)
+    except Exception:
+        pass
+
+    return out_path
 
 
 def compose_scene_clip(
@@ -613,18 +750,31 @@ def compose_scene_clip(
     subtitle_text: Optional[str],
     target_width: int,
     target_height: int,
-    fps: int = 30
+    fps: int = 30,
+    emphasis_keywords: Optional[List[str]] = None,
+    scene_number: Optional[int] = None,
+    total_scenes: Optional[int] = None
 ) -> Path:
     """
-    Normalizes a generated raw video clip (from Veo, Luma, Runway, Kling, or ScreenRecorder)
-    to the target resolution and frame rate, synchronizes voiceover audio, and burns in subtitles.
+    Normalizes a generated raw video clip to target resolution and frame rate,
+    synchronizes voiceover audio, and burns in subtitles with action callouts and step badges.
     """
     out_clip_path.parent.mkdir(parents=True, exist_ok=True)
     frames = max(int(duration * fps), 30)
 
-    if subtitle_text:
+    has_overlay = bool(subtitle_text or emphasis_keywords or scene_number is not None)
+    if has_overlay:
         sub_overlay_path = out_clip_path.parent / f"sub_{out_clip_path.stem}.png"
-        _create_subtitle_overlay(subtitle_text, target_width, target_height, sub_overlay_path)
+        _create_subtitle_overlay(
+            text=subtitle_text,
+            width=target_width,
+            height=target_height,
+            out_png=sub_overlay_path,
+            emphasis_keywords=emphasis_keywords,
+            scene_number=scene_number,
+            total_scenes=total_scenes
+        )
+
 
         filter_complex = (
             f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=increase,"
@@ -884,17 +1034,29 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
         now_time = time.strftime("%H:%M:%S")
         update_task_step(
             task_id, "Analyzing story", 10,
-            "Extracting narrative beats, characters, and visual scenes",
+            "Director Agent analyzing narrative, visual bible, and media types...",
             agent_log={"role": "Director Agent", "icon": "🎬", "message": f"Analyzing story: '{req.title}' | Mode: {mode.upper()} | Style: {req.animation_style.title()}", "time": now_time}
         )
-        scenes = segment_story_into_scenes(req.story, req.animation_style, title=req.title)
+
+        director = VideoDirectorAgent()
+        director_plan = director.direct_production(
+            story_text=req.story,
+            title=req.title,
+            animation_style=req.animation_style,
+            preferred_mode=mode
+        )
+        bible = director_plan.get("bible") or {}
+        scenes = director_plan.get("scenes") or []
+        if not scenes:
+            scenes = segment_story_into_scenes(req.story, req.animation_style, title=req.title)
+
         total_scenes = len(scenes)
 
         now_time = time.strftime("%H:%M:%S")
         update_task_step(
             task_id, "Planning scenes", 20,
-            f"AI planned {total_scenes} cinematic scenes (Mode: {mode.title()})",
-            agent_log={"role": "Screenplay Director", "icon": "📋", "message": f"Deconstructed narrative into {total_scenes} cinematic scene beats with emotion & motion tracking.", "time": now_time}
+            f"Director Agent finalized {total_scenes} cinematic scenes across intelligent media formats",
+            agent_log={"role": "Screenplay Director", "icon": "📋", "message": f"Established Character/Environment Bible and scheduled {total_scenes} scenes across dynamic production engines.", "time": now_time}
         )
 
         res_map = {
@@ -921,32 +1083,39 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             duration = synthesize_scene_voice(sc["narration"], req.voice, voice_path)
             total_duration += duration
 
-            # 2. Source reference image generation -> source-image.png
-            img_path = scene_dir / "source-image.png"
-            generate_scene_image(
-                prompt=sc["visual_prompt"],
-                animation_style=req.animation_style,
-                out_path=img_path,
-                width=target_res[0],
-                height=target_res[1],
-                seed=abs(hash(f"{task_id}_{idx}")) % 1000000,
-                scene_idx=idx
-            )
+            # 2. Determine actual execution mode for this scene
+            mtype = sc.get("media_type")
+            if not mtype:
+                mtype = "screen_recording" if sc.get("video_type") == "screen_recording" else "real_ai_video"
 
-            # Determine actual execution mode for this scene
             if mode == "image_animation":
                 scene_mode = "image_animation"
             elif mode == "screen_recording":
                 scene_mode = "screen_recording"
             elif mode == "real_ai_video":
                 scene_mode = "real_ai_video"
-            else:  # "auto"
-                if sc.get("video_type") == "screen_recording":
-                    scene_mode = "screen_recording"
-                else:
-                    scene_mode = "real_ai_video"
+            else:
+                scene_mode = mtype
 
-            # 3. Save prompt metadata -> prompt.json
+            # 3. Source reference image generation (if needed for scene)
+            img_path = scene_dir / "source-image.png"
+            if scene_mode in ("real_ai_video", "image_to_video", "ai_image", "image_animation"):
+                generate_scene_image(
+                    prompt=sc.get("visual_prompt") or sc.get("narration", ""),
+                    animation_style=req.animation_style,
+                    out_path=img_path,
+                    width=target_res[0],
+                    height=target_res[1],
+                    seed=abs(hash(f"{task_id}_{idx}")) % 1000000,
+                    scene_idx=idx
+                )
+
+            raw_video_path = scene_dir / "generated-video.mp4"
+            final_clip_path = scene_dir / "final_clip.mp4"
+            sub_text = sc["narration"] if req.enable_subtitles else None
+            emphasis_keywords = sc.get("emphasis_keywords") or []
+
+            # 4. Save initial prompt metadata -> prompt.json
             prompt_meta = {
                 "scene_number": idx + 1,
                 "narration": sc.get("narration", ""),
@@ -955,16 +1124,74 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 "camera_motion": sc.get("camera_motion", "zoom_in"),
                 "mood": mood,
                 "video_type": scene_mode,
+                "media_type": scene_mode,
                 "duration": round(duration, 2),
+                "emphasis_keywords": emphasis_keywords,
+                "diagram_spec": sc.get("diagram_spec") or {}
             }
-            (scene_dir / "prompt.json").write_text(json.dumps(prompt_meta, indent=2), encoding="utf-8")
 
-            raw_video_path = scene_dir / "generated-video.mp4"
-            final_clip_path = scene_dir / "final_clip.mp4"
-            sub_text = sc["narration"] if req.enable_subtitles else None
+            # 5. Generate scene video motion per Director engine
+            if scene_mode == "diagram":
+                now_time = time.strftime("%H:%M:%S")
+                update_task_step(
+                    task_id, "Generating animation", pct,
+                    f"Scene {idx + 1}/{total_scenes}: Rendering interactive architectural diagram...",
+                    agent_log={"role": "Diagram Engine", "icon": "📊", "message": f"Scene {idx + 1}: Generated 30fps animated flowchart with pulsing data signals.", "time": now_time}
+                )
+                diagram_engine = DiagramEngine()
+                diagram_engine.generate_diagram_clip(
+                    scene_spec=sc,
+                    duration=duration,
+                    out_path=raw_video_path,
+                    width=target_res[0],
+                    height=target_res[1],
+                    fps=30
+                )
+                compose_scene_clip(
+                    raw_video_path=raw_video_path,
+                    audio_path=voice_path,
+                    out_clip_path=final_clip_path,
+                    duration=duration,
+                    subtitle_text=sub_text,
+                    target_width=target_res[0],
+                    target_height=target_res[1],
+                    fps=30,
+                    emphasis_keywords=emphasis_keywords,
+                    scene_number=idx + 1,
+                    total_scenes=total_scenes
+                )
 
-            # 4. Generate scene video motion
-            if scene_mode == "screen_recording":
+            elif scene_mode == "title_scene":
+                now_time = time.strftime("%H:%M:%S")
+                update_task_step(
+                    task_id, "Generating animation", pct,
+                    f"Scene {idx + 1}/{total_scenes}: Rendering cinematic title card...",
+                    agent_log={"role": "Title Designer", "icon": "🏷️", "message": f"Scene {idx + 1}: Rendered animated title card sequence.", "time": now_time}
+                )
+                render_title_card_clip(
+                    title=req.title or sc.get("narration", "AI Video"),
+                    subtitle=sc.get("narration", ""),
+                    duration=duration,
+                    out_path=raw_video_path,
+                    width=target_res[0],
+                    height=target_res[1],
+                    fps=30
+                )
+                compose_scene_clip(
+                    raw_video_path=raw_video_path,
+                    audio_path=voice_path,
+                    out_clip_path=final_clip_path,
+                    duration=duration,
+                    subtitle_text=sub_text,
+                    target_width=target_res[0],
+                    target_height=target_res[1],
+                    fps=30,
+                    emphasis_keywords=emphasis_keywords,
+                    scene_number=idx + 1,
+                    total_scenes=total_scenes
+                )
+
+            elif scene_mode in ("screen_recording", "browser_automation"):
                 now_time = time.strftime("%H:%M:%S")
                 update_task_step(
                     task_id, "Generating animation", pct,
@@ -988,49 +1215,78 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                     subtitle_text=sub_text,
                     target_width=target_res[0],
                     target_height=target_res[1],
-                    fps=30
+                    fps=30,
+                    emphasis_keywords=emphasis_keywords,
+                    scene_number=idx + 1,
+                    total_scenes=total_scenes
                 )
 
-            elif scene_mode == "real_ai_video":
+            elif scene_mode in ("real_ai_video", "image_to_video"):
                 provider = get_video_provider(req.video_provider)
                 if not provider.is_available():
-                    # STRICT RULE: Never fake video or silently fall back when real video is requested!
-                    raise ProviderNotConfiguredError(
-                        "AI Video Provider is not configured. Please configure the required API key."
+                    if mode == "real_ai_video":
+                        raise ProviderNotConfiguredError(
+                            "AI Video Provider is not configured. Please configure the required API key."
+                        )
+                    # Graceful fallback for auto mode
+                    now_time = time.strftime("%H:%M:%S")
+                    update_task_step(
+                        task_id, "Generating animation", pct,
+                        f"Scene {idx + 1}/{total_scenes}: High-fidelity motion simulation...",
+                        agent_log={"role": "Animator", "icon": "✨", "message": f"Scene {idx + 1}: Video provider not set, dynamic animation rendered.", "time": now_time}
+                    )
+                    render_scene_clip(
+                        img_path=img_path,
+                        audio_path=voice_path,
+                        out_clip_path=final_clip_path,
+                        duration=duration,
+                        camera_motion=sc.get("camera_motion", "zoom_in"),
+                        subtitle_text=sub_text,
+                        target_width=target_res[0],
+                        target_height=target_res[1],
+                        mood=mood
+                    )
+                    if final_clip_path.exists():
+                        try:
+                            shutil.copy(str(final_clip_path), str(raw_video_path))
+                        except Exception:
+                            pass
+                else:
+                    now_time = time.strftime("%H:%M:%S")
+                    update_task_step(
+                        task_id, "Generating animation", pct,
+                        f"Scene {idx + 1}/{total_scenes}: Generating AI video motion via {provider.name}...",
+                        agent_log={"role": "AI Video Director", "icon": "🎥", "message": f"Scene {idx + 1}: Synthesizing continuous video motion with {provider.name} ({round(duration, 1)}s).", "time": now_time}
                     )
 
-                now_time = time.strftime("%H:%M:%S")
-                update_task_step(
-                    task_id, "Generating animation", pct,
-                    f"Scene {idx + 1}/{total_scenes}: Generating AI video motion via {provider.name}...",
-                    agent_log={"role": "AI Video Director", "icon": "🎥", "message": f"Scene {idx + 1}: Synthesizing continuous video motion with {provider.name} ({round(duration, 1)}s).", "time": now_time}
-                )
+                    motion_prompt = sc.get("motion_prompt") or f"{sc.get('visual_prompt', '')}, continuous physical character motion, fluid natural movement, cinematic lighting"
+                    aspect_ratio_str = req.aspect_ratio or "16:9"
 
-                motion_prompt = sc.get("motion_prompt") or f"{sc.get('visual_prompt', '')}, continuous physical character motion, fluid natural movement, cinematic lighting"
-                aspect_ratio_str = req.aspect_ratio or "16:9"
+                    video_job = provider.generate_video(
+                        prompt=motion_prompt,
+                        image_path=img_path,
+                        duration=duration,
+                        aspect_ratio=aspect_ratio_str,
+                        camera_motion=sc.get("camera_motion", "zoom_in")
+                    )
+                    if Path(video_job.video_path).resolve() != raw_video_path.resolve():
+                        shutil.copy(str(video_job.video_path), str(raw_video_path))
 
-                video_job = provider.generate_video(
-                    prompt=motion_prompt,
-                    image_path=img_path,
-                    duration=duration,
-                    aspect_ratio=aspect_ratio_str,
-                    camera_motion=sc.get("camera_motion", "zoom_in")
-                )
-                if Path(video_job.video_path).resolve() != raw_video_path.resolve():
-                    shutil.copy(str(video_job.video_path), str(raw_video_path))
+                    compose_scene_clip(
+                        raw_video_path=raw_video_path,
+                        audio_path=voice_path,
+                        out_clip_path=final_clip_path,
+                        duration=duration,
+                        subtitle_text=sub_text,
+                        target_width=target_res[0],
+                        target_height=target_res[1],
+                        fps=30,
+                        emphasis_keywords=emphasis_keywords,
+                        scene_number=idx + 1,
+                        total_scenes=total_scenes
+                    )
 
-                compose_scene_clip(
-                    raw_video_path=raw_video_path,
-                    audio_path=voice_path,
-                    out_clip_path=final_clip_path,
-                    duration=duration,
-                    subtitle_text=sub_text,
-                    target_width=target_res[0],
-                    target_height=target_res[1],
-                    fps=30
-                )
-
-            else:  # scene_mode == "image_animation"
+            else:  # scene_mode in ("ai_image", "image_animation", "user_image", "user_video")
                 now_time = time.strftime("%H:%M:%S")
                 update_task_step(
                     task_id, "Generating animation", pct,
@@ -1054,8 +1310,22 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                     except Exception:
                         pass
 
+            # 6. Quality Control Check on generated clip
+            checker = SceneQualityChecker()
+            q_report = checker.inspect_scene_clip(final_clip_path, expected_duration=duration)
+            prompt_meta["quality_report"] = {
+                "is_valid": q_report.is_valid,
+                "has_motion": q_report.has_motion,
+                "duration": q_report.duration,
+                "width": q_report.width,
+                "height": q_report.height,
+                "error": q_report.error
+            }
+            (scene_dir / "prompt.json").write_text(json.dumps(prompt_meta, indent=2), encoding="utf-8")
+
             if final_clip_path.exists() and final_clip_path.stat().st_size > 0:
                 scene_clip_paths.append(final_clip_path)
+
 
         if not scene_clip_paths:
             raise RuntimeError("No animated scenes could be generated.")
@@ -1127,6 +1397,19 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             agent_log={"role": "Producer Agent", "icon": "🏆", "message": f"Final master verified! {req.quality} animated video ready for download and streaming.", "time": now_time}
         )
 
+        yt_meta = {}
+        try:
+            yt_gen = YouTubeMetadataGenerator()
+            yt_meta = yt_gen.generate_metadata(
+                title=req.title or "AI Video Production",
+                scenes=scenes,
+                style=req.animation_style,
+                total_duration=total_duration
+            )
+            (project_scenes_dir / "youtube_metadata.json").write_text(json.dumps(yt_meta, indent=2), encoding="utf-8")
+        except Exception as ye:
+            print(f"[story_engine] YouTube metadata notice: {ye}")
+
         result_url = f"/outputs/{output_filename}"
         task_data = {
             "task_id": task_id,
@@ -1134,7 +1417,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             "progress": 100,
             "current_step": "Completed",
             "step_details": [
-                {"name": "Analyzing story",       "status": "completed", "details": f"Parsed {total_scenes} story scenes"},
+                {"name": "Analyzing story",       "status": "completed", "details": f"Parsed {total_scenes} story scenes with Director Bible"},
                 {"name": "Planning scenes",        "status": "completed", "details": f"Mode: {mode.title()} | Style: {req.animation_style.title()}"},
                 {"name": "Generating animation",   "status": "completed", "details": f"Generated {total_scenes} scenes with motion & voice"},
                 {"name": "Assembling movie",       "status": "completed", "details": f"Rendered {total_scenes} scenes ({round(total_duration, 1)}s)"},
@@ -1148,12 +1431,31 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 "aspect_ratio": req.aspect_ratio,
                 "duration": round(total_duration, 2),
                 "scenes_count": total_scenes,
-                "video_generation_mode": mode
+                "video_generation_mode": mode,
+                "bible": bible,
+                "youtube_metadata": yt_meta,
+                "scenes": [
+                    {
+                        "scene_id": idx + 1,
+                        "media_type": sc.get("media_type") or sc.get("video_type", "real_ai_video"),
+                        "narration": sc.get("narration", ""),
+                        "visual_prompt": sc.get("visual_prompt", ""),
+                        "motion_prompt": sc.get("motion_prompt", ""),
+                        "camera_motion": sc.get("camera_motion", "zoom_in"),
+                        "emphasis_keywords": sc.get("emphasis_keywords", []),
+                        "duration": round(sc.get("duration", 5.0), 2),
+                        "video_url": f"/outputs/story_{task_id}_scenes/scene-{idx + 1:03d}/final_clip.mp4"
+                    }
+                    for idx, sc in enumerate(scenes)
+                ]
             },
+            "bible": bible,
+            "youtube_metadata": yt_meta,
             "error": None,
         }
         save_task_progress(task_id, task_data)
         return result_url
+
 
     except ProviderNotConfiguredError as pne:
         err_str = str(pne)
@@ -1256,4 +1558,206 @@ def _mix_story_background_score(video_path: Path, out_final_path: Path, duration
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
     except Exception:
         shutil.copy(str(video_path), str(out_final_path))
+
+
+def regenerate_single_scene(
+    task_id: str,
+    scene_number: int,
+    custom_prompt: Optional[str] = None,
+    custom_media_type: Optional[str] = None,
+    custom_narration: Optional[str] = None,
+    custom_camera_motion: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Regenerates ONLY a single targeted scene without re-rendering the entire project.
+    Re-concatenates the master video with existing adjacent scenes in ~3-5 seconds.
+    """
+    from app.utils.redis_store import get_task_progress, save_task_progress
+
+    project_scenes_dir = OUTPUT_DIR / f"story_{task_id}_scenes"
+    scene_dir = project_scenes_dir / f"scene-{scene_number:03d}"
+    if not scene_dir.exists():
+        raise FileNotFoundError(f"Scene {scene_number} directory not found for task {task_id}")
+
+    prompt_file = scene_dir / "prompt.json"
+    prompt_data = {}
+    if prompt_file.exists():
+        try:
+            prompt_data = json.loads(prompt_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Read project metadata
+    task_data = get_task_progress(task_id) or {}
+    timeline = task_data.get("timeline") or {}
+    aspect_ratio = timeline.get("aspect_ratio", "16:9")
+    animation_style = timeline.get("template", "pixar")
+    voice = task_data.get("voice", "en-US-ChristopherNeural")
+
+    res_map = {
+        "16:9": [1920, 1080],
+        "9:16": [1080, 1920],
+        "1:1":  [1080, 1080]
+    }
+    target_res = res_map.get(aspect_ratio, [1920, 1080])
+
+    narration = (custom_narration or prompt_data.get("narration") or "Regenerated scene").strip()
+    visual_prompt = (custom_prompt or prompt_data.get("visual_prompt") or narration).strip()
+    camera_motion = custom_camera_motion or prompt_data.get("camera_motion", "zoom_in")
+    media_type = custom_media_type or prompt_data.get("media_type") or prompt_data.get("video_type") or "real_ai_video"
+    motion_prompt = f"{visual_prompt}, continuous cinematic motion, fluid movement"
+
+    # 1. Voice
+    voice_path = scene_dir / "voice.mp3"
+    if custom_narration or not voice_path.exists():
+        duration = synthesize_scene_voice(narration, voice, voice_path)
+    else:
+        duration = get_audio_duration(voice_path)
+
+    # 2. Source Image
+    img_path = scene_dir / "source-image.png"
+    if custom_prompt or not img_path.exists():
+        generate_scene_image(
+            prompt=visual_prompt,
+            animation_style=animation_style,
+            out_path=img_path,
+            width=target_res[0],
+            height=target_res[1],
+            scene_idx=scene_number - 1
+        )
+
+    # 3. Render video clip
+    raw_video_path = scene_dir / "generated-video.mp4"
+    final_clip_path = scene_dir / "final_clip.mp4"
+    emphasis_keywords = prompt_data.get("emphasis_keywords") or []
+
+    sc_spec = {
+        "scene_id": scene_number,
+        "narration": narration,
+        "visual_prompt": visual_prompt,
+        "motion_prompt": motion_prompt,
+        "camera_motion": camera_motion,
+        "media_type": media_type,
+        "emphasis_keywords": emphasis_keywords,
+        "diagram_spec": prompt_data.get("diagram_spec") or {}
+    }
+
+    if media_type == "diagram":
+        diag_eng = DiagramEngine()
+        diag_eng.generate_diagram_clip(sc_spec, duration, raw_video_path, target_res[0], target_res[1], fps=30)
+        compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
+
+    elif media_type == "title_scene":
+        render_title_card_clip(timeline.get("title", "AI Video"), narration, duration, raw_video_path, target_res[0], target_res[1], fps=30)
+        compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
+
+    elif media_type in ("screen_recording", "browser_automation"):
+        rec = ScreenRecordingEngine()
+        rec.generate_tutorial_clip(sc_spec, duration, raw_video_path, target_res[0], target_res[1], fps=30)
+        compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
+
+    elif media_type in ("real_ai_video", "image_to_video"):
+        provider = get_video_provider(None)
+        if provider.is_available():
+            job = provider.generate_video(motion_prompt, img_path, duration, aspect_ratio, camera_motion)
+            if Path(job.video_path).resolve() != raw_video_path.resolve():
+                shutil.copy(str(job.video_path), str(raw_video_path))
+            compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
+        else:
+            render_scene_clip(img_path, voice_path, final_clip_path, duration, camera_motion, narration, target_res[0], target_res[1], mood="cinematic")
+            if final_clip_path.exists():
+                try:
+                    shutil.copy(str(final_clip_path), str(raw_video_path))
+                except Exception:
+                    pass
+
+    else:  # ai_image, image_animation
+        render_scene_clip(img_path, voice_path, final_clip_path, duration, camera_motion, narration, target_res[0], target_res[1], mood="cinematic")
+        if final_clip_path.exists():
+            try:
+                shutil.copy(str(final_clip_path), str(raw_video_path))
+            except Exception:
+                pass
+
+    # 4. Quality Inspection
+    checker = SceneQualityChecker()
+    q_report = checker.inspect_scene_clip(final_clip_path, duration)
+
+    # 5. Update prompt.json
+    prompt_data.update({
+        "scene_number": scene_number,
+        "narration": narration,
+        "visual_prompt": visual_prompt,
+        "motion_prompt": motion_prompt,
+        "camera_motion": camera_motion,
+        "video_type": media_type,
+        "media_type": media_type,
+        "duration": round(duration, 2),
+        "quality_report": {
+            "is_valid": q_report.is_valid,
+            "has_motion": q_report.has_motion,
+            "duration": q_report.duration,
+            "width": q_report.width,
+            "height": q_report.height,
+            "error": q_report.error
+        }
+    })
+    prompt_file.write_text(json.dumps(prompt_data, indent=2), encoding="utf-8")
+
+    # 6. Re-concatenate master video
+    all_scenes = sorted(project_scenes_dir.glob("scene-*"))
+    concat_list = project_scenes_dir / "concat_story_list.txt"
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for s_dir in all_scenes:
+            clip = s_dir / "final_clip.mp4"
+            if clip.exists() and clip.stat().st_size > 0:
+                f.write(f"file '{clip.resolve().as_posix()}'\n")
+
+    master_output = OUTPUT_DIR / f"story_{task_id}.mp4"
+    cmd_concat = [
+        FFMPEG_PATH, "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_list),
+        "-c", "copy",
+        str(master_output)
+    ]
+    try:
+        subprocess.run(cmd_concat, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=20)
+    except Exception:
+        cmd_reencode = [
+            FFMPEG_PATH, "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_list),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            str(master_output)
+        ]
+        subprocess.run(cmd_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=45)
+
+    # Update timeline scenes cache in task_data
+    if "timeline" in task_data and "scenes" in task_data["timeline"]:
+        for sc_entry in task_data["timeline"]["scenes"]:
+            if sc_entry.get("scene_id") == scene_number:
+                sc_entry["media_type"] = media_type
+                sc_entry["visual_prompt"] = visual_prompt
+                sc_entry["narration"] = narration
+                sc_entry["duration"] = round(duration, 2)
+        save_task_progress(task_id, task_data)
+
+    return {
+        "task_id": task_id,
+        "scene_number": scene_number,
+        "status": "success",
+        "media_type": media_type,
+        "scene_video_url": f"/outputs/story_{task_id}_scenes/scene-{scene_number:03d}/final_clip.mp4",
+        "master_video_url": f"/outputs/story_{task_id}.mp4",
+        "quality_report": prompt_data["quality_report"]
+    }
+
 

@@ -102,3 +102,11 @@ class AgentStoryPromptRequest(BaseModel):
     voice: Optional[str] = "en-US-ChristopherNeural"
 
 
+class RegenerateSceneRequest(BaseModel):
+    custom_prompt: Optional[str] = None
+    custom_media_type: Optional[str] = None
+    custom_narration: Optional[str] = None
+    custom_camera_motion: Optional[str] = None
+
+
+
