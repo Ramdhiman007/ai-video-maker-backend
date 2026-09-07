@@ -38,11 +38,12 @@ def get_available_providers() -> List[Dict[str, Any]]:
     return results
 
 
-def get_video_provider(provider_id: Optional[str] = None) -> VideoGenerationProvider:
+def get_video_provider(provider_id: Optional[str] = None, api_key: Optional[str] = None) -> VideoGenerationProvider:
     """
     Resolves the active AI Video Generation Provider.
     If provider_id is passed, attempts to use that specific provider.
     Otherwise checks VIDEO_PROVIDER env var, or selects the first configured provider.
+    Accepts an optional api_key passed directly from the user or request.
     """
     target = (provider_id or os.getenv("VIDEO_PROVIDER", "auto")).strip().lower()
 
@@ -60,15 +61,20 @@ def get_video_provider(provider_id: Optional[str] = None) -> VideoGenerationProv
     }
 
     if target in mapping:
-        provider_instance = mapping[target]()
+        provider_instance = mapping[target](api_key=api_key)
         return provider_instance
+
+    # If api_key provided in auto mode, use GoogleVeoProvider with this key
+    if api_key:
+        return GoogleVeoProvider(api_key=api_key)
 
     # 'auto': Find the first configured provider
     for cls in ALL_PROVIDERS:
-        instance = cls()
+        instance = cls(api_key=api_key)
         if instance.is_configured():
             return instance
 
     # Fallback to GoogleVeoProvider as default reference
-    default_provider = GoogleVeoProvider()
+    default_provider = GoogleVeoProvider(api_key=api_key)
     return default_provider
+

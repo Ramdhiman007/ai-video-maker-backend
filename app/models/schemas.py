@@ -93,6 +93,7 @@ class StoryVideoRequest(BaseModel):
     music_volume: float = 0.18
     video_generation_mode: str = "auto"     # 'auto', 'real_ai_video', 'screen_recording', 'image_animation'
     video_provider: Optional[str] = None    # 'veo', 'luma', 'runway', 'kling', 'replicate'
+    api_key: Optional[str] = None           # Optional client-supplied API key
 
 
 class AgentStoryPromptRequest(BaseModel):

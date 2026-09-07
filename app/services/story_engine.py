@@ -1222,7 +1222,7 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 )
 
             elif scene_mode in ("real_ai_video", "image_to_video"):
-                provider = get_video_provider(req.video_provider)
+                provider = get_video_provider(req.video_provider, api_key=getattr(req, 'api_key', None))
                 if not provider.is_available():
                     if mode == "real_ai_video":
                         raise ProviderNotConfiguredError(
