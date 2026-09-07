@@ -426,8 +426,17 @@ async def agent_write_story(request: AgentStoryPromptRequest):
     return result
 
 
-@router.post("/create-story-video", response_model=TaskProgress)
+@router.get("/video-providers")
+def get_video_providers():
+    """Returns list of video providers and whether each is configured and ready."""
+    try:
+        from app.services.video_providers.factory import get_available_providers
+        return {"providers": get_available_providers()}
+    except Exception as e:
+        return {"providers": [], "error": str(e)}
 
+
+@router.post("/create-story-video", response_model=TaskProgress)
 async def create_story_video(request: StoryVideoRequest, background_tasks: BackgroundTasks):
     """Converts a story of any length into an animated video with voiceover and artwork."""
     if not request.story.strip():

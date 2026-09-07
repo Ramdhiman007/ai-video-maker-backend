@@ -91,6 +91,9 @@ class StoryVideoRequest(BaseModel):
     enable_subtitles: bool = True
     music_mood: str = "cinematic"           # 'cinematic', 'whimsical', 'adventure', 'emotional', 'none'
     music_volume: float = 0.18
+    video_generation_mode: str = "auto"     # 'auto', 'real_ai_video', 'screen_recording', 'image_animation'
+    video_provider: Optional[str] = None    # 'veo', 'luma', 'runway', 'kling', 'replicate'
+
 
 class AgentStoryPromptRequest(BaseModel):
     prompt: str

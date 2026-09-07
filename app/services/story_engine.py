@@ -24,6 +24,12 @@ from app.config import (
 )
 from app.models.schemas import StoryVideoRequest, Timeline, TimelineSegment
 from app.utils.redis_store import update_task_step, save_task_progress
+from app.services.video_providers import (
+    get_video_provider,
+    ProviderNotConfiguredError,
+    VideoGenerationError,
+)
+from app.services.screen_recording_engine import ScreenRecordingEngine
 
 STYLE_MODIFIERS = {
     "pixar": (
@@ -78,9 +84,9 @@ def segment_story_into_scenes(story_text: str, animation_style: str = "pixar", t
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
-            prompt = f"""You are a professional animated film director creating a scene-by-scene visual storyboard.
+            prompt = f"""You are a professional animated film director and technical visualization director creating a scene-by-scene visual storyboard.
 
-Carefully read the story below and break it into animated video scenes. Each scene covers one narrative beat.
+Carefully read the story/script below and break it into animated video scenes. Each scene covers one narrative beat or technical action.
 
 Story Title: "{title or 'Animated Story'}"
 Animation Style: {animation_style}
@@ -90,10 +96,12 @@ Story:
 Generate as many scenes as the story naturally requires (minimum 2, no maximum limit).
 
 For each scene return a JSON object with EXACTLY these keys:
-- "narration": The exact story sentences for this scene (1-3 sentences, natural storytelling voice).
-- "visual_prompt": A highly detailed image generation prompt. MUST include the actual characters from the story (animals, people, creatures, objects) with their visual descriptions (color, size, expression). Include the specific setting, lighting, atmosphere. Do NOT add animation style here.
-- "camera_motion": One of exactly: zoom_in, zoom_out, pan_left, pan_right
+- "narration": The exact story/tutorial sentences for this scene (1-3 sentences, natural storytelling voice).
+- "visual_prompt": A highly detailed visual/image prompt describing the subject, characters, setting, lighting, and art style.
+- "motion_prompt": A dedicated video animation prompt describing temporal physical movement and action in the scene (e.g. 'A majestic golden lion walks steadily forward through the dense jungle undergrowth, paws stepping naturally on moss, mane swaying in the gentle wind, cinematic tracking camera shot' or 'Typing Playwright test command into bash terminal and seeing assertions pass').
+- "camera_motion": One of exactly: zoom_in, zoom_out, pan_left, pan_right, tracking_shot
 - "mood": One of exactly: magical, exciting, sad, triumphant, scary, peaceful
+- "video_type": One of: 'ai_video' (for animated characters, animals, nature, fantasy, fiction) or 'screen_recording' (for software tutorials, terminal code execution, browser navigation, SQL queries, testing demos, Windows settings).
 
 Return ONLY a raw valid JSON array. No markdown fences, no explanation text, no trailing comma."""
             response = client.models.generate_content(
@@ -107,10 +115,17 @@ Return ONLY a raw valid JSON array. No markdown fences, no explanation text, no 
             raw = raw.strip()
             scenes = json.loads(raw)
             if isinstance(scenes, list) and len(scenes) > 0:
-                # Ensure every scene has a mood field
                 for sc in scenes:
                     if "mood" not in sc:
                         sc["mood"] = "magical"
+                    if "video_type" not in sc:
+                        n_low = (sc.get("narration", "") + " " + sc.get("visual_prompt", "")).lower()
+                        if any(k in n_low for k in ["code", "test", "playwright", "selenium", "jmeter", "sql", "chrome", "browser", "terminal", "windows", "bug", "error"]):
+                            sc["video_type"] = "screen_recording"
+                        else:
+                            sc["video_type"] = "ai_video"
+                    if "motion_prompt" not in sc or not sc["motion_prompt"]:
+                        sc["motion_prompt"] = f"{sc.get('visual_prompt', '')}, continuous physical motion, natural movement, cinematic physics"
                 return scenes
         except Exception as e:
             print(f"[story_engine] Gemini scene segmentation fallback: {e}")
@@ -131,18 +146,23 @@ Return ONLY a raw valid JSON array. No markdown fences, no explanation text, no 
     scenes = []
     curr_narration = []
     curr_words = 0
-    motions = ["zoom_in", "zoom_out", "pan_left", "pan_right"]
+    motions = ["zoom_in", "zoom_out", "pan_left", "pan_right", "tracking_shot"]
     moods = ["magical", "peaceful", "exciting", "triumphant"]
 
     for sent in raw_sentences:
         w_count = len(sent.split())
         if curr_words + w_count > 30 and curr_narration:
             narr = " ".join(curr_narration)
+            n_low = narr.lower()
+            v_type = "screen_recording" if any(k in n_low for k in ["code", "test", "playwright", "selenium", "jmeter", "sql", "chrome", "browser", "terminal", "windows", "bug", "error"]) else "ai_video"
+            kw = _extract_visual_keywords(narr)
             scenes.append({
                 "narration": narr,
-                "visual_prompt": _extract_visual_keywords(narr),
+                "visual_prompt": kw,
+                "motion_prompt": f"{kw}, continuous natural physical movement, realistic motion, dynamic physics",
                 "camera_motion": motions[len(scenes) % len(motions)],
                 "mood": moods[len(scenes) % len(moods)],
+                "video_type": v_type,
             })
             curr_narration = [sent]
             curr_words = w_count
@@ -152,11 +172,16 @@ Return ONLY a raw valid JSON array. No markdown fences, no explanation text, no 
 
     if curr_narration:
         narr = " ".join(curr_narration)
+        n_low = narr.lower()
+        v_type = "screen_recording" if any(k in n_low for k in ["code", "test", "playwright", "selenium", "jmeter", "sql", "chrome", "browser", "terminal", "windows", "bug", "error"]) else "ai_video"
+        kw = _extract_visual_keywords(narr)
         scenes.append({
             "narration": narr,
-            "visual_prompt": _extract_visual_keywords(narr),
+            "visual_prompt": kw,
+            "motion_prompt": f"{kw}, continuous natural physical movement, realistic motion, dynamic physics",
             "camera_motion": motions[len(scenes) % len(motions)],
             "mood": moods[len(scenes) % len(moods)],
+            "video_type": v_type,
         })
 
     return scenes
@@ -548,6 +573,134 @@ def render_scene_clip(img_path: Path, audio_path: Path, out_clip_path: Path, dur
 
     return out_clip_path
 
+
+def _create_subtitle_overlay(text: str, width: int, height: int, out_png: Path) -> Path:
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font_size = max(24, int(height * 0.040))
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    max_w = int(width * 0.85)
+    lines = _wrap_text(text, font, draw, max_w)
+    line_height = int(font_size * 1.35)
+    total_text_h = len(lines) * line_height
+    start_y = int(height * 0.82) - (total_text_h // 2)
+
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        lx = (width - lw) // 2
+        ly = start_y + i * line_height
+
+        padding = 14
+        pill = [lx - padding, ly - 4, lx + lw + padding, ly + line_height - 2]
+        draw.rounded_rectangle(pill, radius=10, fill=(0, 0, 0, 175))
+        draw.text((lx + 2, ly + 2), line, fill=(0, 0, 0, 220), font=font)
+        draw.text((lx, ly), line, fill=(255, 255, 255, 255), font=font)
+
+    img.save(out_png, "PNG")
+    return out_png
+
+
+def compose_scene_clip(
+    raw_video_path: Path,
+    audio_path: Path,
+    out_clip_path: Path,
+    duration: float,
+    subtitle_text: Optional[str],
+    target_width: int,
+    target_height: int,
+    fps: int = 30
+) -> Path:
+    """
+    Normalizes a generated raw video clip (from Veo, Luma, Runway, Kling, or ScreenRecorder)
+    to the target resolution and frame rate, synchronizes voiceover audio, and burns in subtitles.
+    """
+    out_clip_path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(duration * fps), 30)
+
+    if subtitle_text:
+        sub_overlay_path = out_clip_path.parent / f"sub_{out_clip_path.stem}.png"
+        _create_subtitle_overlay(subtitle_text, target_width, target_height, sub_overlay_path)
+
+        filter_complex = (
+            f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=increase,"
+            f"crop={target_width}:{target_height},fps={fps}[base];"
+            f"[base][1:v]overlay=0:0:format=auto,format=yuv420p[v]"
+        )
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-stream_loop", "-1",
+            "-i", str(raw_video_path),
+            "-i", str(sub_overlay_path),
+            "-i", str(audio_path),
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", "2:a",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-threads", "1",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-t", str(duration),
+            "-pix_fmt", "yuv420p",
+            str(out_clip_path)
+        ]
+    else:
+        filter_complex = (
+            f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=increase,"
+            f"crop={target_width}:{target_height},fps={fps},format=yuv420p[v]"
+        )
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-stream_loop", "-1",
+            "-i", str(raw_video_path),
+            "-i", str(audio_path),
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", "1:a",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-threads", "1",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-t", str(duration),
+            "-pix_fmt", "yuv420p",
+            str(out_clip_path)
+        ]
+
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=60)
+    except Exception as e:
+        print(f"[story_engine] compose_scene_clip notice ({e}), trying scale fallback...")
+        cmd_fallback = [
+            FFMPEG_PATH, "-y",
+            "-stream_loop", "-1",
+            "-i", str(raw_video_path),
+            "-i", str(audio_path),
+            "-vf", f"scale={target_width}:{target_height},fps={fps},format=yuv420p",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-c:a", "aac",
+            "-t", str(duration),
+            "-shortest",
+            "-pix_fmt", "yuv420p",
+            str(out_clip_path)
+        ]
+        subprocess.run(cmd_fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=45)
+
+    return out_clip_path
+
+
 def _prepare_subtitled_image(src_img: Path, dst_img: Path, subtitle_text: Optional[str], width: int, height: int):
     with Image.open(src_img) as img:
         img = img.convert("RGB")
@@ -721,12 +874,18 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
     work_dir = TEMP_DIR / f"story_render_{task_id}"
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-scene persistent storage directory: project/scenes/scene-001/
+    project_scenes_dir = OUTPUT_DIR / f"story_{task_id}_scenes"
+    project_scenes_dir.mkdir(parents=True, exist_ok=True)
+
+    mode = (req.video_generation_mode or "auto").lower()
+
     try:
         now_time = time.strftime("%H:%M:%S")
         update_task_step(
             task_id, "Analyzing story", 10,
             "Extracting narrative beats, characters, and visual scenes",
-            agent_log={"role": "Director Agent", "icon": "🎬", "message": f"Analyzing story: '{req.title}' | Style: {req.animation_style.title()} | Audio: {req.music_mood}", "time": now_time}
+            agent_log={"role": "Director Agent", "icon": "🎬", "message": f"Analyzing story: '{req.title}' | Mode: {mode.upper()} | Style: {req.animation_style.title()}", "time": now_time}
         )
         scenes = segment_story_into_scenes(req.story, req.animation_style, title=req.title)
         total_scenes = len(scenes)
@@ -734,8 +893,8 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
         now_time = time.strftime("%H:%M:%S")
         update_task_step(
             task_id, "Planning scenes", 20,
-            f"AI planned {total_scenes} animated scenes in {req.animation_style.title()} style",
-            agent_log={"role": "Screenplay Director", "icon": "📋", "message": f"Deconstructed narrative into {total_scenes} cinematic scene beats with emotion tracking.", "time": now_time}
+            f"AI planned {total_scenes} cinematic scenes (Mode: {mode.title()})",
+            agent_log={"role": "Screenplay Director", "icon": "📋", "message": f"Deconstructed narrative into {total_scenes} cinematic scene beats with emotion & motion tracking.", "time": now_time}
         )
 
         res_map = {
@@ -753,18 +912,17 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             narration_preview = sc.get("narration", "")[:55]
             mood = sc.get("mood", "magical")
 
-            now_time = time.strftime("%H:%M:%S")
-            update_task_step(
-                task_id, "Generating animation", pct,
-                f"Scene {idx + 1}/{total_scenes}: {narration_preview}...",
-                agent_log={"role": "Concept Artist", "icon": "🎨", "message": f"Scene {idx + 1}/{total_scenes}: Generating visuals [{mood.title()} Mood] -> {sc.get('visual_prompt','')[:50]}...", "time": now_time}
-            )
+            # Structured per-scene asset directory: project/scenes/scene-001/
+            scene_dir = project_scenes_dir / f"scene-{idx + 1:03d}"
+            scene_dir.mkdir(parents=True, exist_ok=True)
 
-            voice_path = work_dir / f"voice_{idx:03d}.mp3"
+            # 1. Voice narration synthesis -> voice.mp3
+            voice_path = scene_dir / "voice.mp3"
             duration = synthesize_scene_voice(sc["narration"], req.voice, voice_path)
             total_duration += duration
 
-            img_path = work_dir / f"scene_{idx:03d}.png"
+            # 2. Source reference image generation -> source-image.png
+            img_path = scene_dir / "source-image.png"
             generate_scene_image(
                 prompt=sc["visual_prompt"],
                 animation_style=req.animation_style,
@@ -775,29 +933,129 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 scene_idx=idx
             )
 
-            now_time = time.strftime("%H:%M:%S")
-            update_task_step(
-                task_id, "Generating animation", min(pct + 2, 82),
-                f"Scene {idx + 1}/{total_scenes}: Voice narration ({round(duration, 1)}s) & 3D drift",
-                agent_log={"role": "VFX & Voice", "icon": "✨", "message": f"Scene {idx + 1}: Neural voice synced ({round(duration,1)}s). Applied 3D {sc.get('camera_motion','zoom_in')} camera sway & particle overlay.", "time": now_time}
-            )
+            # Determine actual execution mode for this scene
+            if mode == "image_animation":
+                scene_mode = "image_animation"
+            elif mode == "screen_recording":
+                scene_mode = "screen_recording"
+            elif mode == "real_ai_video":
+                scene_mode = "real_ai_video"
+            else:  # "auto"
+                if sc.get("video_type") == "screen_recording":
+                    scene_mode = "screen_recording"
+                else:
+                    scene_mode = "real_ai_video"
 
-            clip_path = work_dir / f"clip_{idx:03d}.mp4"
+            # 3. Save prompt metadata -> prompt.json
+            prompt_meta = {
+                "scene_number": idx + 1,
+                "narration": sc.get("narration", ""),
+                "visual_prompt": sc.get("visual_prompt", ""),
+                "motion_prompt": sc.get("motion_prompt", ""),
+                "camera_motion": sc.get("camera_motion", "zoom_in"),
+                "mood": mood,
+                "video_type": scene_mode,
+                "duration": round(duration, 2),
+            }
+            (scene_dir / "prompt.json").write_text(json.dumps(prompt_meta, indent=2), encoding="utf-8")
+
+            raw_video_path = scene_dir / "generated-video.mp4"
+            final_clip_path = scene_dir / "final_clip.mp4"
             sub_text = sc["narration"] if req.enable_subtitles else None
-            render_scene_clip(
-                img_path=img_path,
-                audio_path=voice_path,
-                out_clip_path=clip_path,
-                duration=duration,
-                camera_motion=sc.get("camera_motion", "zoom_in"),
-                subtitle_text=sub_text,
-                target_width=target_res[0],
-                target_height=target_res[1],
-                mood=mood
-            )
 
-            if clip_path.exists() and clip_path.stat().st_size > 0:
-                scene_clip_paths.append(clip_path)
+            # 4. Generate scene video motion
+            if scene_mode == "screen_recording":
+                now_time = time.strftime("%H:%M:%S")
+                update_task_step(
+                    task_id, "Generating animation", pct,
+                    f"Scene {idx + 1}/{total_scenes}: Recording technical demonstration...",
+                    agent_log={"role": "Screen Recorder", "icon": "💻", "message": f"Scene {idx + 1}: Executing live technical demonstration capture ({round(duration, 1)}s).", "time": now_time}
+                )
+                recorder = ScreenRecordingEngine()
+                recorder.generate_tutorial_clip(
+                    scene_spec=sc,
+                    duration=duration,
+                    out_path=raw_video_path,
+                    width=target_res[0],
+                    height=target_res[1],
+                    fps=30
+                )
+                compose_scene_clip(
+                    raw_video_path=raw_video_path,
+                    audio_path=voice_path,
+                    out_clip_path=final_clip_path,
+                    duration=duration,
+                    subtitle_text=sub_text,
+                    target_width=target_res[0],
+                    target_height=target_res[1],
+                    fps=30
+                )
+
+            elif scene_mode == "real_ai_video":
+                provider = get_video_provider(req.video_provider)
+                if not provider.is_available():
+                    # STRICT RULE: Never fake video or silently fall back when real video is requested!
+                    raise ProviderNotConfiguredError(
+                        "AI Video Provider is not configured. Please configure the required API key."
+                    )
+
+                now_time = time.strftime("%H:%M:%S")
+                update_task_step(
+                    task_id, "Generating animation", pct,
+                    f"Scene {idx + 1}/{total_scenes}: Generating AI video motion via {provider.name}...",
+                    agent_log={"role": "AI Video Director", "icon": "🎥", "message": f"Scene {idx + 1}: Synthesizing continuous video motion with {provider.name} ({round(duration, 1)}s).", "time": now_time}
+                )
+
+                motion_prompt = sc.get("motion_prompt") or f"{sc.get('visual_prompt', '')}, continuous physical character motion, fluid natural movement, cinematic lighting"
+                aspect_ratio_str = req.aspect_ratio or "16:9"
+
+                video_job = provider.generate_video(
+                    prompt=motion_prompt,
+                    image_path=img_path,
+                    duration=duration,
+                    aspect_ratio=aspect_ratio_str,
+                    camera_motion=sc.get("camera_motion", "zoom_in")
+                )
+                if Path(video_job.video_path).resolve() != raw_video_path.resolve():
+                    shutil.copy(str(video_job.video_path), str(raw_video_path))
+
+                compose_scene_clip(
+                    raw_video_path=raw_video_path,
+                    audio_path=voice_path,
+                    out_clip_path=final_clip_path,
+                    duration=duration,
+                    subtitle_text=sub_text,
+                    target_width=target_res[0],
+                    target_height=target_res[1],
+                    fps=30
+                )
+
+            else:  # scene_mode == "image_animation"
+                now_time = time.strftime("%H:%M:%S")
+                update_task_step(
+                    task_id, "Generating animation", pct,
+                    f"Scene {idx + 1}/{total_scenes}: Image animation & particle sway",
+                    agent_log={"role": "Animator", "icon": "✨", "message": f"Scene {idx + 1}: Applied 3D {sc.get('camera_motion','zoom_in')} camera sway & particle overlay.", "time": now_time}
+                )
+                render_scene_clip(
+                    img_path=img_path,
+                    audio_path=voice_path,
+                    out_clip_path=final_clip_path,
+                    duration=duration,
+                    camera_motion=sc.get("camera_motion", "zoom_in"),
+                    subtitle_text=sub_text,
+                    target_width=target_res[0],
+                    target_height=target_res[1],
+                    mood=mood
+                )
+                if final_clip_path.exists():
+                    try:
+                        shutil.copy(str(final_clip_path), str(raw_video_path))
+                    except Exception:
+                        pass
+
+            if final_clip_path.exists() and final_clip_path.stat().st_size > 0:
+                scene_clip_paths.append(final_clip_path)
 
         if not scene_clip_paths:
             raise RuntimeError("No animated scenes could be generated.")
@@ -877,8 +1135,8 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
             "current_step": "Completed",
             "step_details": [
                 {"name": "Analyzing story",       "status": "completed", "details": f"Parsed {total_scenes} story scenes"},
-                {"name": "Planning scenes",        "status": "completed", "details": f"Selected {req.animation_style.title()} animation style"},
-                {"name": "Generating animation",   "status": "completed", "details": "Generated neural voiceover & AI artwork"},
+                {"name": "Planning scenes",        "status": "completed", "details": f"Mode: {mode.title()} | Style: {req.animation_style.title()}"},
+                {"name": "Generating animation",   "status": "completed", "details": f"Generated {total_scenes} scenes with motion & voice"},
                 {"name": "Assembling movie",       "status": "completed", "details": f"Rendered {total_scenes} scenes ({round(total_duration, 1)}s)"},
                 {"name": "Mastering soundtrack",   "status": "completed", "details": "Mixed voice narration with cinematic ambiance"},
                 {"name": "Finalizing",             "status": "completed", "details": f"{req.quality} MP4 completed successfully!"},
@@ -889,13 +1147,28 @@ def render_story_to_animated_video(task_id: str, req: StoryVideoRequest) -> str:
                 "template": req.animation_style,
                 "aspect_ratio": req.aspect_ratio,
                 "duration": round(total_duration, 2),
-                "scenes_count": total_scenes
+                "scenes_count": total_scenes,
+                "video_generation_mode": mode
             },
             "error": None,
         }
         save_task_progress(task_id, task_data)
         return result_url
 
+    except ProviderNotConfiguredError as pne:
+        err_str = str(pne)
+        print(f"[story_engine] Provider not configured for task {task_id}: {err_str}")
+        now_time = time.strftime("%H:%M:%S")
+        save_task_progress(task_id, {
+            "task_id": task_id,
+            "status": "failed",
+            "progress": 0,
+            "current_step": "Configuration Required",
+            "step_details": [],
+            "error": err_str,
+            "agent_logs": [{"role": "System", "icon": "⚠️", "message": err_str, "time": now_time}]
+        })
+        raise pne
 
     except Exception as e:
         print(f"[story_engine] Story rendering failed for task {task_id}: {e}")
