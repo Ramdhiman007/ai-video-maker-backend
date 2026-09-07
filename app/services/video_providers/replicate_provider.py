@@ -21,15 +21,17 @@ class ReplicateVideoProvider(VideoGenerationProvider):
 
     BASE_URL = "https://api.replicate.com/v1/predictions"
 
-    def __init__(self, api_token: Optional[str] = None, model: str = "minimax/video-01"):
+    def __init__(self, api_token: Optional[str] = None, api_key: Optional[str] = None, model: str = "minimax/video-01"):
         self._api_token = (
             api_token
+            or api_key
             or os.getenv("REPLICATE_API_TOKEN")
             or os.getenv("REPLICATE_API_KEY")
             or os.getenv("VIDEO_PROVIDER_API_KEY")
             or ""
         )
         self.model = os.getenv("REPLICATE_VIDEO_MODEL", model)
+
 
     @property
     def name(self) -> str:

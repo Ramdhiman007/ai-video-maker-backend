@@ -1657,7 +1657,7 @@ def regenerate_single_scene(
         compose_scene_clip(raw_video_path, voice_path, final_clip_path, duration, narration, target_res[0], target_res[1], fps=30, emphasis_keywords=emphasis_keywords, scene_number=scene_number)
 
     elif media_type in ("real_ai_video", "image_to_video"):
-        provider = get_video_provider(None)
+        provider = get_video_provider(None, api_key=task_data.get("api_key"))
         if provider.is_available():
             job = provider.generate_video(motion_prompt, img_path, duration, aspect_ratio, camera_motion)
             if Path(job.video_path).resolve() != raw_video_path.resolve():

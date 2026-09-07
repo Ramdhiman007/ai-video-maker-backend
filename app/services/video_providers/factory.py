@@ -70,9 +70,13 @@ def get_video_provider(provider_id: Optional[str] = None, api_key: Optional[str]
 
     # 'auto': Find the first configured provider
     for cls in ALL_PROVIDERS:
-        instance = cls(api_key=api_key)
+        try:
+            instance = cls(api_key=api_key)
+        except TypeError:
+            instance = cls()
         if instance.is_configured():
             return instance
+
 
     # Fallback to GoogleVeoProvider as default reference
     default_provider = GoogleVeoProvider(api_key=api_key)
